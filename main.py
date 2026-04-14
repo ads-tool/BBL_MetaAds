@@ -152,7 +152,7 @@ async def download_result_file(task_id: str, background_tasks: BackgroundTasks):
     # --- LUỒNG 1: KIỂM TRA NHANH TRÊN RAM ---
     if task_id in tasks_db:
         task = tasks_db[task_id]
-        if task.get("status") != "COMPLETED":
+        if task.get("status") != "COMPLETED" and task.get("status") != "PARTIAL":
             raise HTTPException(status_code=400, detail="Task chưa hoàn thành, chưa có file.")
         file_path = task.get("download_path")
         
@@ -175,7 +175,7 @@ async def download_result_file(task_id: str, background_tasks: BackgroundTasks):
                 raise HTTPException(status_code=404, detail="Không tìm thấy task_id này trong hệ thống.")
             
             db_status = str(result[0]).strip().upper()
-            if db_status != 'COMPLETED':
+            if db_status != 'COMPLETED' and db_status != 'PARTIAL':
                 raise HTTPException(status_code=400, detail="Task hiện tại chưa hoàn thành, không có file.")
             
             file_path = os.path.join(os.getcwd(), "file_send_meta", f"meta_ads_result_{task_id}.xlsx")
