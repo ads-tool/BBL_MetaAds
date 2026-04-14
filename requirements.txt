@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+pydantic
+psycopg2-binary
+pandas
+openpyxl
+requests
+meta-ads-collector
+google-generativeai
+langdetect
+pycountry
+python-dotenv

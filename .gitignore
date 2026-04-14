@@ -1,0 +1,7 @@
+*.venv
+.env
+dogbot
+file_send_meta
+__pycache__
+*.log
+*.json
