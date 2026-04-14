@@ -28,7 +28,7 @@ class PipelineInput(BaseModel):
     min_impressions: int = 100    
 
 def run_pipeline_worker(task_id: str, raw_input: str, iso_country: str, meta_status: str, min_impressions: int):
-    tasks_db[task_id]["status"] = "processing"
+    tasks_db[task_id]["status"] = "PROCESSING"
     tasks_db[task_id]["current_action"] = "Đang khởi tạo trình duyệt và kết nối Meta Library..."
     
     cmd = [
@@ -56,7 +56,7 @@ def run_pipeline_worker(task_id: str, raw_input: str, iso_country: str, meta_sta
         process.wait()
         
         if process.returncode == 0:
-            tasks_db[task_id]["status"] = "completed"
+            tasks_db[task_id]["status"] = "COMPLETED"
             tasks_db[task_id]["current_action"] = "Đã hoàn thành toàn bộ Pipeline."
             tasks_db[task_id]["result_logs"] = full_stdout
 
@@ -87,15 +87,15 @@ def run_pipeline_worker(task_id: str, raw_input: str, iso_country: str, meta_sta
                             tasks_db[task_id]["download_path"] = new_staged_path
                         break
             except Exception as db_err:
-                tasks_db[task_id]["status"] = "partial"
+                tasks_db[task_id]["status"] = "PARTIAL"
                 tasks_db[task_id]["error"] = f"Cào file thành công nhưng lỗi lưu Postgres: {str(db_err)}"
         else:
-            tasks_db[task_id]["status"] = "failed"
+            tasks_db[task_id]["status"] = "FAILED"
             tasks_db[task_id]["error"] = full_stdout
             tasks_db[task_id]["current_action"] = "Tiến trình gặp lỗi."
             
     except Exception as e:
-        tasks_db[task_id]["status"] = "error"
+        tasks_db[task_id]["status"] = "ERROR"
         tasks_db[task_id]["error"] = str(e)
         tasks_db[task_id]["current_action"] = "Lỗi hệ thống nghiêm trọng."
 
@@ -119,7 +119,7 @@ async def trigger_pipeline(payload: PipelineInput):
     task_id = str(uuid.uuid4())
     
     tasks_db[task_id] = {
-        "status": "pending",
+        "status": "PENDING",
         "current_action": "Đang đưa vào hàng đợi...",
         "input_text": payload.raw_text,
         "mapped_country": iso_country,
@@ -132,7 +132,7 @@ async def trigger_pipeline(payload: PipelineInput):
     
     return {
         "task_id": task_id, 
-        "status": "pending", 
+        "status": "PENDING", 
         "message": "Đã đưa vào hàng đợi.",
         "debug_info": f"Hệ thống ghi nhận: {iso_country} - {meta_status}"
     }
@@ -152,7 +152,7 @@ async def download_result_file(task_id: str, background_tasks: BackgroundTasks):
     # --- LUỒNG 1: KIỂM TRA NHANH TRÊN RAM ---
     if task_id in tasks_db:
         task = tasks_db[task_id]
-        if task.get("status") != "completed":
+        if task.get("status") != "COMPLETED":
             raise HTTPException(status_code=400, detail="Task chưa hoàn thành, chưa có file.")
         file_path = task.get("download_path")
         
