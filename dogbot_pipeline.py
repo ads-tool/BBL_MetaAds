@@ -14,7 +14,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import pandas as pd
 import requests
-from meta_ads_collector import MetaAdsCollector
+from meta_ads_collector import MetaAdsCollector, FilterConfig
 
 try:
     from langdetect import detect as detect_lang
@@ -625,7 +625,7 @@ def pick_top3_reach(ad_dict: Dict[str, Any]) -> str:
     return str(v)
 
 
-def crawl_ads_from_page(page_link: Optional[str], page_id: Optional[str], output_dir: Path, max_ads: Optional[int] = None, country: str = "ALL", status: str = "ACTIVE") -> List[Tuple[list[str], Any]]:
+def crawl_ads_from_page(page_link: Optional[str], page_id: Optional[str], output_dir: Path, max_ads: Optional[int] = None, country: str = "ALL", status: str = "ACTIVE", start_date: Optional[str] = None, end_date: Optional[str] = None) -> List[Tuple[list[str], Any]]:
     if not page_id and page_link:
         page_id = extract_page_id(page_link)
     if not page_id:
@@ -637,6 +637,17 @@ def crawl_ads_from_page(page_link: Optional[str], page_id: Optional[str], output
     with MetaAdsCollector() as collector:
         def _crawl_all():
             tmp_json = output_dir / f"_tmp_collect_{page_id}_{country}.json"
+            
+            filters = None
+            if start_date or end_date:
+                filter_kwargs = {}
+                if start_date:
+                    filter_kwargs["start_date"] = dt.datetime.strptime(start_date, "%Y-%m-%d")
+                if end_date:
+                    filter_kwargs["end_date"] = dt.datetime.strptime(end_date, "%Y-%m-%d")
+                
+                filters = FilterConfig(**filter_kwargs)
+
             try:
                 collector.collect_to_json(
                     str(tmp_json),
@@ -644,6 +655,7 @@ def crawl_ads_from_page(page_link: Optional[str], page_id: Optional[str], output
                     country=country,  
                     page_ids=[str(page_id)],
                     status=status,    
+                    filter_config=filters, # <--- Truyền object filters vào đây thay vì chuỗi
                     max_results=None,
                 )
                 with tmp_json.open("r", encoding="utf-8") as f:
@@ -697,7 +709,7 @@ def save_seen_video_keys(output_dir: Path, seen: set[str]) -> None:
     p.write_text(json.dumps(sorted(seen), ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def build_row(parent_countries: list[str], ad_dict: Dict[str, Any], creative: Dict[str, Any], gemini_models: List[str], video_analysis_cache: dict) -> Dict[str, Any]:
+def build_row(parent_countries: list[str], ad_dict: Dict[str, Any], creative: Dict[str, Any], gemini_models: List[str], video_analysis_cache: dict, no_transcript: bool = False) -> Dict[str, Any]:
     # Lấy ID phân tách rõ ràng cho Database
     parent_id = str(find_first_value(ad_dict, ["id", "ad_id", "ad_archive_id"]) or "N/A")
     child_id = str(creative.get("child_ad_id") or parent_id)
@@ -785,10 +797,15 @@ def build_row(parent_countries: list[str], ad_dict: Dict[str, Any], creative: Di
         retry_step("download_video", lambda: download_video(video_url, video_path), retries=2)
         row["duration"] = probe_duration_seconds(video_path)
 
-        gem = retry_step("gemini_transcribe_and_analyze", lambda: gemini_transcribe_and_analyze(gemini_models, video_path), retries=1)
-        row["transcript"] = gem["transcript"]
-        row["transcript_translated"] = gem["transcript_translated"]
-        row["video_language"] = gem["video_language"]
+        if no_transcript:
+            row["transcript"] = "N/A"
+            row["transcript_translated"] = "N/A"
+            row["video_language"] = "N/A"
+        else:
+            gem = retry_step("gemini_transcribe_and_analyze", lambda: gemini_transcribe_and_analyze(gemini_models, video_path), retries=1)
+            row["transcript"] = gem["transcript"]
+            row["transcript_translated"] = gem["transcript_translated"]
+            row["video_language"] = gem["video_language"]
 
         if video_key:
             video_analysis_cache[video_key] = {
@@ -928,7 +945,7 @@ def _save_video_checkpoint(path: Path, payload: dict) -> None:
     tmp.replace(path)
 
 
-def run(page_link: Optional[str], page_id: Optional[str], output_dir: Path, max_ads: Optional[int] = None, country: str = "ALL", status: str = "ACTIVE", min_impressions: int = 100):
+def run(page_link: Optional[str], page_id: Optional[str], output_dir: Path, max_ads: Optional[int] = None, country: str = "ALL", status: str = "ACTIVE", min_impressions: int = 100, no_transcript: bool = False, start_date: Optional[str] = None, end_date: Optional[str] = None):
     output_dir.mkdir(parents=True, exist_ok=True)
     gemini_models = setup_gemini_models()
 
@@ -936,7 +953,7 @@ def run(page_link: Optional[str], page_id: Optional[str], output_dir: Path, max_
     ck_state_path = _checkpoint_path(output_dir, input_kind, input_value, max_ads, country)
     ck_state = _load_video_checkpoint(ck_state_path)
 
-    ads = retry_step("crawl_ads", lambda: crawl_ads_from_page(page_link, page_id, output_dir, max_ads=max_ads, country=country, status=status), retries=2)
+    ads = retry_step("crawl_ads", lambda: crawl_ads_from_page(page_link, page_id, output_dir, max_ads=max_ads, country=country, status=status, start_date=start_date, end_date=end_date), retries=2)
 
     rows = ck_state.get("rows", []) if isinstance(ck_state.get("rows"), list) else []
     failed_rows = int(ck_state.get("failed_rows", 0) or 0)
@@ -1036,7 +1053,7 @@ def run(page_link: Optional[str], page_id: Optional[str], output_dir: Path, max_
 
             try:
                 # Hàm build_row sẽ lo việc kiểm tra video_analysis_cache
-                row = retry_step("build_row", lambda c=countries_list, a=ad_dict, cr=creative: build_row(c, a, cr, gemini_models, video_analysis_cache), retries=2)
+                row = retry_step("build_row", lambda c=countries_list, a=ad_dict, cr=creative: build_row(c, a, cr, gemini_models, video_analysis_cache, no_transcript), retries=2)
                 rows.append(row)
             except Exception:
                 # Fallback tĩnh nếu lỗi mạng/video (giữ nguyên code cũ của bạn)
@@ -1150,6 +1167,9 @@ def main():
     ap.add_argument("--country", type=str, default="ALL")
     ap.add_argument("--status", type=str, default="ACTIVE")
     ap.add_argument("--min-impressions", type=int, default=100)
+    ap.add_argument("--no-transcript", action="store_true")
+    ap.add_argument("--start-date", type=str, default=None)
+    ap.add_argument("--end-date", type=str, default=None)
     args = ap.parse_args()
 
     if bool(args.page_link) == bool(args.page_id):
@@ -1158,7 +1178,8 @@ def main():
     out_path, crawl_json_path, total, failed_rows, skipped_duplicate_videos, skipped_low_reach = run(
         args.page_link, args.page_id, Path(args.output_dir), 
         max_ads=args.max_ads, country=args.country, status=args.status,
-        min_impressions=args.min_impressions
+        min_impressions=args.min_impressions, no_transcript=args.no_transcript,
+        start_date=args.start_date, end_date=args.end_date
     )
 
     print(json.dumps({

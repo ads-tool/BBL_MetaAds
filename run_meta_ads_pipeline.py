@@ -86,12 +86,14 @@ def extract_inputs(raw: str) -> list[InputItem]:
     return sorted(out)
 
 
-def _fingerprint_inputs(inputs: list[InputItem], max_ads: int | None, country: str, status: str) -> str:
+def _fingerprint_inputs(inputs: list[InputItem], max_ads: int | None, country: str, status: str, start_date: str | None, end_date: str | None) -> str:
     payload = {
         "inputs": [{"kind": x.kind, "value": x.value} for x in inputs],
         "max_ads": max_ads,
         "country": country,
         "status": status,
+        "start_date": start_date,
+        "end_date": end_date,
     }
     raw = json.dumps(payload, ensure_ascii=False, sort_keys=True)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
@@ -144,9 +146,16 @@ def _result_artifacts_exist(output_dir: Path, run: dict) -> bool:
     return bool(ep and ep.exists() and jp and jp.exists())
 
 
-def run_dogbot(run_dir: Path, dogbot_script: Path, item: InputItem, max_ads: int | None = None, country: str = "ALL", status: str = "ACTIVE", min_impressions: int = 100) -> dict:
+def run_dogbot(run_dir: Path, dogbot_script: Path, item: InputItem, max_ads: int | None = None, country: str = "ALL", status: str = "ACTIVE", min_impressions: int = 100, no_transcript: bool = False, start_date: str = None, end_date: str = None) -> dict:
     output_dir = run_dir / "outputs"
     cmd = ["python3", str(dogbot_script), "--output-dir", str(output_dir), "--country", country, "--status", status, "--min-impressions", str(min_impressions)]
+    if no_transcript:
+        cmd.append("--no-transcript")
+    if start_date:
+        cmd.extend(["--start-date", start_date])
+    if end_date:
+        cmd.extend(["--end-date", end_date])
+        
     if item.kind == "page-link":
         cmd += ["--page-link", item.value]
     else:
@@ -355,7 +364,10 @@ def run_pipeline_in_isolated_dir(
     fingerprint: str,
     country: str = "ALL",    
     status: str = "ACTIVE",
-    min_impressions: int = 100
+    min_impressions: int = 100,
+    no_transcript: bool = False,
+    start_date: str = None,
+    end_date: str = None
 ) -> dict:
     
     output_dir = run_dir / "outputs"
@@ -382,7 +394,7 @@ def run_pipeline_in_isolated_dir(
             runs.append(reused)
             continue
 
-        r = run_dogbot(run_dir, dogbot_script, item, max_ads=max_ads, country=country, status=status, min_impressions=min_impressions)
+        r = run_dogbot(run_dir, dogbot_script, item, max_ads=max_ads, country=country, status=status, min_impressions=min_impressions, no_transcript=no_transcript, start_date=start_date, end_date=end_date)
         runs.append(r)
 
         state["runs"] = runs
@@ -429,6 +441,9 @@ def main() -> None:
     ap.add_argument("--country", type=str, default="ALL")
     ap.add_argument("--status", type=str, default="ACTIVE")
     ap.add_argument("--min-impressions", type=int, default=100)
+    ap.add_argument("--no-transcript", action="store_true")
+    ap.add_argument("--start-date", type=str, default=None)
+    ap.add_argument("--end-date", type=str, default=None)
     args = ap.parse_args()
 
     ensure_dependencies()
@@ -452,7 +467,7 @@ def main() -> None:
         }, ensure_ascii=False))
         return
 
-    fingerprint = _fingerprint_inputs(inputs, args.max_ads, args.country, args.status)
+    fingerprint = _fingerprint_inputs(inputs, args.max_ads, args.country, args.status, args.start_date, args.end_date)
     run_dir = base_run_dir / fingerprint
 
     try:
@@ -464,7 +479,10 @@ def main() -> None:
             fingerprint=fingerprint,
             country=args.country,  
             status=args.status,
-            min_impressions=args.min_impressions
+            min_impressions=args.min_impressions,
+            no_transcript=args.no_transcript,
+            start_date=args.start_date,
+            end_date=args.end_date
         )
     except Exception as e:
         logging.error(f"Pipeline execution failed with unhandled exception: {e}", exc_info=True)

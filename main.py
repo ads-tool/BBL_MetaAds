@@ -5,15 +5,18 @@ import sys
 import json
 import os
 import psycopg2
+import re
+from datetime import datetime
 from db_ingest import ingest_excel_to_postgres
 from const import COUNTRY_MAPPING, STATUS_MAPPING
-from typing import Dict
+from typing import Dict, Optional
 from pydantic import BaseModel
 from concurrent.futures import ThreadPoolExecutor
 from dotenv import load_dotenv 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.responses import FileResponse
 import time
+
 load_dotenv() 
 
 app = FastAPI(title="Meta Ads Pipeline API")
@@ -26,8 +29,11 @@ class PipelineInput(BaseModel):
     country: str = "Tất cả"      
     status: str = "Đang chạy"     
     min_impressions: int = 100    
+    no_transcript: bool = False 
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
 
-def run_pipeline_worker(task_id: str, raw_input: str, iso_country: str, meta_status: str, min_impressions: int):
+def run_pipeline_worker(task_id: str, raw_input: str, iso_country: str, meta_status: str, min_impressions: int, no_transcript: bool, start_date: str = None, end_date: str = None):
     tasks_db[task_id]["status"] = "PROCESSING"
     tasks_db[task_id]["current_action"] = "Đang khởi tạo trình duyệt và kết nối Meta Library..."
     
@@ -38,9 +44,15 @@ def run_pipeline_worker(task_id: str, raw_input: str, iso_country: str, meta_sta
         "--status", meta_status,
         "--min-impressions", str(min_impressions) 
     ]
+
+    if no_transcript:
+        cmd.append("--no-transcript")
+    if start_date:
+        cmd.extend(["--start-date", start_date])
+    if end_date:
+        cmd.extend(["--end-date", end_date])
     
     try:
-        # Thay subprocess.run bằng Popen
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding='utf-8')
         
         full_stdout = ""
@@ -100,7 +112,6 @@ def run_pipeline_worker(task_id: str, raw_input: str, iso_country: str, meta_sta
         tasks_db[task_id]["current_action"] = "Lỗi hệ thống nghiêm trọng."
 
 def cleanup_downloaded_file(file_path: str):
-    """Xóa file ngay sau khi người dùng đã tải xuống thành công."""
     try:
         if file_path and os.path.exists(file_path):
             os.remove(file_path)
@@ -113,6 +124,22 @@ async def trigger_pipeline(payload: PipelineInput):
     if not payload.raw_text.strip():
         raise HTTPException(status_code=400, detail="Input không được để trống")
     
+    # Validation & Auto-fill Date
+    start_date = payload.start_date
+    end_date = payload.end_date
+    date_pattern = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+    if start_date or end_date:
+        if start_date and not end_date:
+            end_date = datetime.now().strftime("%Y-%m-%d")
+        elif end_date and not start_date:
+            start_date = "2004-01-01"
+            
+        if not date_pattern.match(start_date):
+            raise HTTPException(status_code=400, detail="start_date sai định dạng YYYY-MM-DD")
+        if not date_pattern.match(end_date):
+            raise HTTPException(status_code=400, detail="end_date sai định dạng YYYY-MM-DD")
+    
     iso_country = COUNTRY_MAPPING.get(payload.country.strip(), "ALL")
     meta_status = STATUS_MAPPING.get(payload.status.strip(), "ACTIVE")
         
@@ -124,17 +151,19 @@ async def trigger_pipeline(payload: PipelineInput):
         "input_text": payload.raw_text,
         "mapped_country": iso_country,
         "mapped_status": meta_status,
-        "min_impressions": payload.min_impressions
+        "min_impressions": payload.min_impressions,
+        "start_date": start_date,
+        "end_date": end_date
     }
     
     loop = asyncio.get_running_loop()
-    loop.run_in_executor(executor, run_pipeline_worker, task_id, payload.raw_text, iso_country, meta_status, payload.min_impressions)
+    loop.run_in_executor(executor, run_pipeline_worker, task_id, payload.raw_text, iso_country, meta_status, payload.min_impressions, payload.no_transcript, start_date, end_date)
     
     return {
         "task_id": task_id, 
         "status": "PENDING", 
         "message": "Đã đưa vào hàng đợi.",
-        "debug_info": f"Hệ thống ghi nhận: {iso_country} - {meta_status}"
+        "debug_info": f"Hệ thống ghi nhận: {iso_country} - {meta_status} | Date: {start_date} to {end_date}"
     }
 
 @app.get("/api/v1/status/{task_id}")
@@ -146,17 +175,14 @@ async def get_task_status(task_id: str):
 
 @app.get("/api/v1/download/{task_id}")
 async def download_result_file(task_id: str, background_tasks: BackgroundTasks):
-    """API để Frontend gọi khi người dùng bấm nút 'Tải File'."""
     file_path = None
     
-    # --- LUỒNG 1: KIỂM TRA NHANH TRÊN RAM ---
     if task_id in tasks_db:
         task = tasks_db[task_id]
         if task.get("status") != "COMPLETED" and task.get("status") != "PARTIAL":
             raise HTTPException(status_code=400, detail="Task chưa hoàn thành, chưa có file.")
         file_path = task.get("download_path")
         
-    # --- LUỒNG 2: FALLBACK XUỐNG DATABASE VÀ GHÉP TÊN FILE ---
     else:
         try:
             conn = psycopg2.connect(
@@ -190,8 +216,6 @@ async def download_result_file(task_id: str, background_tasks: BackgroundTasks):
         raise HTTPException(status_code=404, detail="Dữ liệu báo đã hoàn thành nhưng file vật lý không tồn tại hoặc đã bị xóa.")
 
     file_name = os.path.basename(file_path)
-
-    # background_tasks.add_task(cleanup_downloaded_file, file_path)
 
     return FileResponse(
         path=file_path,
