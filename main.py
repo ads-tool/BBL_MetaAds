@@ -226,4 +226,5 @@ async def download_result_file(task_id: str, background_tasks: BackgroundTasks):
 
 # uvicorn main:app --host 192.168.1.68 --port 8000 
 # nohup uvicorn main:app --host 192.168.1.68 --port 8000 > api.log 2>&1 &
+# pm2 start "/home/kaineki/MetaAds/.venv/bin/uvicorn" --name "MetaAds-api" --interpreter "/home/kaineki/MetaAds/.venv/bin/python" -- main:app --host 192.168.1.68 --port 8000
 

@@ -490,7 +490,7 @@ def gemini_transcribe_and_analyze(model_names: List[str], video_path: Path) -> D
         "transcript (original language), "
         "transcript_translated (to Vietnamese), and "
         "video_language (full language name, e.g., 'English', 'Vietnamese'). "
-        "If no speech, all values should be 'N/A'. "
+        "If no speech, all values should be null. "
         "Do not include markdown fences."
     )
 
@@ -510,9 +510,9 @@ def gemini_transcribe_and_analyze(model_names: List[str], video_path: Path) -> D
                     txt = re.sub(r"^```json\s*|\s*```$", "", txt, flags=re.MULTILINE)
                     data = json.loads(txt)
                     return {
-                        "transcript": data.get("transcript", "N/A") or "N/A",
-                        "transcript_translated": data.get("transcript_translated", "N/A") or "N/A",
-                        "video_language": data.get("video_language", "N/A") or "N/A",
+                        "transcript": data.get("transcript", "") or "",
+                        "transcript_translated": data.get("transcript_translated", "") or "",
+                        "video_language": data.get("video_language", "") or "",
                     }
                 except Exception as e:
                     last_err = e
