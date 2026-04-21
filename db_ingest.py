@@ -6,7 +6,7 @@ import ast
 
 def ingest_excel_to_postgres(excel_path: str, db_config: dict):
     df = pd.read_excel(excel_path)
-    df = df.fillna("N/A")
+    df = df.fillna("""")
 
     conn = psycopg2.connect(**db_config)
     cur = conn.cursor()
@@ -14,8 +14,8 @@ def ingest_excel_to_postgres(excel_path: str, db_config: dict):
     ad_group_cache = {}
 
     for _, row in df.iterrows():
-        countries_raw = str(row.get('countries', 'N/A'))
-        if countries_raw != 'N/A':
+        countries_raw = str(row.get('countries', '""'))
+        if countries_raw != '""':
             countries_list = [c.strip().upper() for c in countries_raw.split(',') if c.strip()]
         else:
             countries_list = []
@@ -33,10 +33,10 @@ def ingest_excel_to_postgres(excel_path: str, db_config: dict):
         else:
             gender = 'ALL'
 
-        age_raw = row.get('age_audience', 'N/A')
+        age_raw = row.get('age_audience', '""')
         age = age_raw
         
-        if pd.isna(age_raw) or age_raw == 'N/A' or str(age_raw).strip() == '':
+        if pd.isna(age_raw) or age_raw == '""' or str(age_raw).strip() == '':
             age = 'NS'
         else:
             age_str = str(age_raw).strip()
@@ -67,13 +67,13 @@ def ingest_excel_to_postgres(excel_path: str, db_config: dict):
         ad_group_id = ad_group_cache[ad_group_name]
 
         duration = None
-        if row.get('duration', 'N/A') != 'N/A':
+        if row.get('duration', '""') != '""':
             try: duration = float(row['duration'])
             except: pass
 
         dup_count = 0
         dup_val = row.get('duplicate_count', 0)
-        if dup_val != 'N/A':
+        if dup_val != '""':
             try:
                 dup_count = int(float(dup_val)) 
             except:
@@ -101,16 +101,16 @@ def ingest_excel_to_postgres(excel_path: str, db_config: dict):
         ))
         text_id = cur.fetchone()[0]
 
-        countries_list = [c.strip() for c in str(row['countries']).split(',')] if row.get('countries', 'N/A') != 'N/A' else []
+        countries_list = [c.strip() for c in str(row['countries']).split(',')] if row.get('countries', '""') != '""' else []
         
         crawl_date = None
-        if row.get('crawl_date', 'N/A') != 'N/A':
+        if row.get('crawl_date', '""') != '""':
             crawl_date = str(row['crawl_date']).split(' ')[0]
 
         data_source = 'facebook'
 
         reach_val = None
-        if row.get('reach (EU)', 'N/A') != 'N/A':
+        if row.get('reach (EU)', '""') != '""':
             nums = re.findall(r'\d+', str(row['reach (EU)']).replace(',', ''))
             if nums: 
                 reach_val = int(nums[0])

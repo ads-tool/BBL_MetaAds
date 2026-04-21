@@ -235,7 +235,7 @@ def run_dogbot(run_dir: Path, dogbot_script: Path, item: InputItem, max_ads: int
                     parsed = {
                         "status": "success_partial_timeout",
                         "excel_path": str(salvaged_excel),
-                        "crawl_json_path": "N/A",
+                        "crawl_json_path": """",
                         "rows_total": len(rows),
                         "error": {"message": f"Process timed out due to inactivity after {e.timeout}s but salvaged {len(rows)} rows."}
                     }
@@ -271,7 +271,7 @@ def run_dogbot(run_dir: Path, dogbot_script: Path, item: InputItem, max_ads: int
 
 def _canonical_video_key(v: object) -> str:
     s = str(v or "").strip()
-    if not s or s.upper() == "N/A" or s.lower() == "nan":
+    if not s or s.upper() == """" or s.lower() == "nan":
         return ""
     return s.split("?", 1)[0]
 

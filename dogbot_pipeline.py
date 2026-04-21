@@ -232,7 +232,7 @@ def pick_cta_text(ad_dict: Dict[str, Any]) -> str:
     if raw.get("cta_text"):
         return str(raw.get("cta_text"))
 
-    return str(find_first_value(ad_dict, ["cta_text", "call_to_action_text", "ctaLabel"]) or "N/A")
+    return str(find_first_value(ad_dict, ["cta_text", "call_to_action_text", "ctaLabel"]) or """")
 
 
 def pick_cta_type(ad_dict: Dict[str, Any]) -> str:
@@ -249,7 +249,7 @@ def pick_cta_type(ad_dict: Dict[str, Any]) -> str:
     if raw.get("cta_type"):
         return str(raw.get("cta_type"))
 
-    return str(find_first_value(ad_dict, ["cta_type", "call_to_action_type", "ctaType"]) or "N/A")
+    return str(find_first_value(ad_dict, ["cta_type", "call_to_action_type", "ctaType"]) or """")
 
 
 def pick_app_link(ad_dict: Dict[str, Any]) -> str:
@@ -266,13 +266,13 @@ def pick_app_link(ad_dict: Dict[str, Any]) -> str:
     if raw.get("link_url"):
         return str(raw.get("link_url"))
 
-    return str(find_first_value(ad_dict, ["app_link", "app_url", "landing_page_url", "link_url", "url"]) or "N/A")
+    return str(find_first_value(ad_dict, ["app_link", "app_url", "landing_page_url", "link_url", "url"]) or """")
 
 
 def detect_text_language_with_gemini(model_names: List[str], text: str) -> str:
     t = (text or "").strip()
-    if not t or t == "N/A":
-        return "N/A"
+    if not t or t == """":
+        return """"
 
     prompt = (
         "Detect the language of this text and return ONLY ISO 639-1 code in lowercase "
@@ -298,13 +298,13 @@ def detect_text_language_with_gemini(model_names: List[str], text: str) -> str:
     try:
         return retry_step("detect_language_gemini", _do, retries=2)
     except Exception:
-        return "N/A"
+        return """"
 
 
 def detect_text_language(text: str, gemini_models: Optional[List[str]] = None) -> str:
     t = (text or "").strip()
-    if not t or t == "N/A":
-        return "N/A"
+    if not t or t == """":
+        return """"
 
     word_count = len(t.split())
 
@@ -313,11 +313,11 @@ def detect_text_language(text: str, gemini_models: Optional[List[str]] = None) -
         return detect_text_language_with_gemini(gemini_models, t)
 
     if detect_lang is None:
-        return "N/A"
+        return """"
     try:
         return detect_lang(t)
     except Exception:
-        return "N/A"
+        return """"
 
 
 def pick_headline(ad_dict: Dict[str, Any]) -> str:
@@ -332,7 +332,7 @@ def pick_headline(ad_dict: Dict[str, Any]) -> str:
     if snap.get("title"):
         return str(snap.get("title"))
 
-    return str(find_first_value(ad_dict, ["title", "headline", "ad_creative_link_titles"]) or "N/A")
+    return str(find_first_value(ad_dict, ["title", "headline", "ad_creative_link_titles"]) or """")
 
 
 def pick_primary_text(ad_dict: Dict[str, Any]) -> str:
@@ -347,7 +347,7 @@ def pick_primary_text(ad_dict: Dict[str, Any]) -> str:
     if snap.get("body"):
         return str(snap.get("body"))
 
-    return str(find_first_value(ad_dict, ["body", "primary_text", "ad_creative_bodies"]) or "N/A")
+    return str(find_first_value(ad_dict, ["body", "primary_text", "ad_creative_bodies"]) or """")
 
 
 def pick_impressions(ad_dict: Dict[str, Any]) -> str:
@@ -372,9 +372,9 @@ def pick_impressions(ad_dict: Dict[str, Any]) -> str:
         hi = val2.get("upper_bound") or val2.get("upper") or val2.get("max")
         if lo or hi:
             return f"{lo or ''}-{hi or ''}".strip("-")
-        return "N/A"
+        return """"
     if val2 is None:
-        return "N/A"
+        return """"
     return str(val2)
 
 
@@ -416,12 +416,12 @@ def probe_duration_seconds(video_path: Path) -> str:
                 raise RuntimeError(f"ffprobe failed with exit code {result.returncode}: {error_message.strip()}")
 
         out = result.stdout.strip()
-        return str(int(float(out))) if out else "N/A"
+        return str(int(float(out))) if out else """"
 
     try:
         return retry_step("probe_duration", _do, retries=3)
     except Exception:
-        return "N/A"
+        return """"
 
 
 def setup_gemini_models() -> List[str]:
@@ -565,14 +565,14 @@ def extract_countries_from_ad(ad_dict: Dict[str, Any], fallback_country: str) ->
 def pick_gender_audience(ad_dict: Dict[str, Any]) -> str:
     v = ad_dict.get("gender_audience")
     if v in (None, ""):
-        return "N/A"
+        return """"
     return str(v)
 
 
 def pick_age_audience(ad_dict: Dict[str, Any]) -> str:
     v = ad_dict.get("age_audience")
     if v in (None, ""):
-        return "N/A"
+        return """"
     if isinstance(v, (dict, list)):
         return json.dumps(v, ensure_ascii=False)
     return str(v)
@@ -581,13 +581,13 @@ def pick_age_audience(ad_dict: Dict[str, Any]) -> str:
 def pick_eu_total_reach(ad_dict: Dict[str, Any]) -> str:
     v = ad_dict.get("eu_total_reach")
     if v in (None, ""):
-        return "N/A"
+        return """"
     return str(v)
 
 
 def parse_eu_total_reach_lower_bound(ad_dict: Dict[str, Any]) -> Optional[int]:
     v = ad_dict.get("eu_total_reach")
-    if v in (None, "", "N/A"):
+    if v in (None, "", """"):
         return None
 
     if isinstance(v, (int, float)):
@@ -604,7 +604,7 @@ def parse_eu_total_reach_lower_bound(ad_dict: Dict[str, Any]) -> Optional[int]:
         return None
 
     s = str(v).strip()
-    if not s or s.upper() == "N/A":
+    if not s or s.upper() == """":
         return None
 
     nums = re.findall(r"\d+", s)
@@ -619,7 +619,7 @@ def parse_eu_total_reach_lower_bound(ad_dict: Dict[str, Any]) -> Optional[int]:
 def pick_top3_reach(ad_dict: Dict[str, Any]) -> str:
     v = ad_dict.get("top3_reach")
     if v in (None, ""):
-        return "N/A"
+        return """"
     if isinstance(v, (dict, list)):
         return json.dumps(v, ensure_ascii=False)
     return str(v)
@@ -686,7 +686,7 @@ def crawl_ads_from_page(page_link: Optional[str], page_id: Optional[str], output
 
 def canonical_video_key(video_url: Optional[str]) -> str:
     u = str(video_url or "").strip()
-    if not u or u.upper() == "N/A":
+    if not u or u.upper() == """":
         return ""
     return u.split("?", 1)[0]
 
@@ -711,7 +711,7 @@ def save_seen_video_keys(output_dir: Path, seen: set[str]) -> None:
 
 def build_row(parent_countries: list[str], ad_dict: Dict[str, Any], creative: Dict[str, Any], gemini_models: List[str], video_analysis_cache: dict, no_transcript: bool = False) -> Dict[str, Any]:
     # Lấy ID phân tách rõ ràng cho Database
-    parent_id = str(find_first_value(ad_dict, ["id", "ad_id", "ad_archive_id"]) or "N/A")
+    parent_id = str(find_first_value(ad_dict, ["id", "ad_id", "ad_archive_id"]) or """")
     child_id = str(creative.get("child_ad_id") or parent_id)
 
     # Lấy nội dung ưu tiên từ Thẻ Con
@@ -764,11 +764,11 @@ def build_row(parent_countries: list[str], ad_dict: Dict[str, Any], creative: Di
         "headline_language": detect_text_language(headline, gemini_models),
         "primary_text": primary_text,
         "primary_text_language": detect_text_language(primary_text, gemini_models),
-        "video_url": video_url or "N/A",
-        "duration": "N/A",
-        "transcript": "N/A",
-        "transcript_translated": "N/A",
-        "video_language": "N/A",
+        "video_url": video_url or """",
+        "duration": """",
+        "transcript": """",
+        "transcript_translated": """",
+        "video_language": """",
         "gender_audience": str(gender),
         "age_audience": str(age),
         "reach (EU)": str(eu_reach),
@@ -778,7 +778,7 @@ def build_row(parent_countries: list[str], ad_dict: Dict[str, Any], creative: Di
         "app_link": app_link,
     }
 
-    if not video_url or video_url == "N/A":
+    if not video_url or video_url == """":
         return row
     
     video_key = canonical_video_key(video_url)
@@ -798,9 +798,9 @@ def build_row(parent_countries: list[str], ad_dict: Dict[str, Any], creative: Di
         row["duration"] = probe_duration_seconds(video_path)
 
         if no_transcript:
-            row["transcript"] = "N/A"
-            row["transcript_translated"] = "N/A"
-            row["video_language"] = "N/A"
+            row["transcript"] = """"
+            row["transcript_translated"] = """"
+            row["video_language"] = """"
         else:
             gem = retry_step("gemini_transcribe_and_analyze", lambda: gemini_transcribe_and_analyze(gemini_models, video_path), retries=1)
             row["transcript"] = gem["transcript"]
@@ -864,7 +864,7 @@ def _parse_countries_cell(v: Any) -> list[str]:
     if isinstance(v, list):
         return [str(x).strip() for x in v if str(x).strip()]
     s = str(v or "").strip()
-    if not s or s in {"N/A", "None", "nan", "[]"}:
+    if not s or s in {"""", "None", "nan", "[]"}:
         return []
     try:
         data = json.loads(s)
@@ -1093,11 +1093,11 @@ def run(page_link: Optional[str], page_id: Optional[str], output_dir: Path, max_
                     "headline_language": detect_text_language(headline, gemini_models),
                     "primary_text": primary_text,
                     "primary_text_language": detect_text_language(primary_text, gemini_models),
-                    "video_url": video_url or "N/A",
-                    "duration": "N/A",
-                    "transcript": "N/A",
-                    "transcript_translated": "N/A",
-                    "video_language": "N/A",
+                    "video_url": video_url or """",
+                    "duration": """",
+                    "transcript": """",
+                    "transcript_translated": """",
+                    "video_language": """",
                     "gender_audience": str(gender),
                     "age_audience": str(age),
                     "reach (EU)": str(eu_reach),
@@ -1137,7 +1137,7 @@ def run(page_link: Optional[str], page_id: Optional[str], output_dir: Path, max_
         df = pd.DataFrame(rows)
         for col in OUTPUT_COLUMNS:
             if col not in df.columns:
-                df[col] = "N/A"
+                df[col] = """"
         df = df[OUTPUT_COLUMNS]
         df.to_excel(out_path, index=False)
 
