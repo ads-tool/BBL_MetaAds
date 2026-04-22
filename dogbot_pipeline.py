@@ -2,13 +2,16 @@
 import argparse
 import dataclasses
 import datetime as dt
+import itertools
 import json
 import os
 import re
 import subprocess
 import shutil
 import sys
+import threading
 import time
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -709,7 +712,93 @@ def save_seen_video_keys(output_dir: Path, seen: set[str]) -> None:
     p.write_text(json.dumps(sorted(seen), ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def build_row(parent_countries: list[str], ad_dict: Dict[str, Any], creative: Dict[str, Any], gemini_models: List[str], video_analysis_cache: dict, no_transcript: bool = False) -> Dict[str, Any]:
+def _analyze_video_download_and_gemini(
+    video_url: str,
+    safe_id: str,
+    gemini_models: List[str],
+    no_transcript: bool,
+) -> Dict[str, Any]:
+    """Download 1 video, probe duration, (optional) transcribe qua Gemini.
+
+    Trả về dict {duration, transcript, transcript_translated, video_language}.
+    Luôn cleanup file video tạm trong finally. An toàn gọi song song từ nhiều thread
+    vì safe_id là duy nhất cho mỗi creative (child_ad_id).
+    """
+    video_path = VIDEO_DIR / f"{safe_id}.mp4"
+    try:
+        retry_step("download_video", lambda: download_video(video_url, video_path), retries=2)
+        duration = probe_duration_seconds(video_path)
+
+        if no_transcript:
+            return {
+                "duration": duration,
+                "transcript": "",
+                "transcript_translated": "",
+                "video_language": "",
+            }
+
+        gem = retry_step(
+            "gemini_transcribe_and_analyze",
+            lambda: gemini_transcribe_and_analyze(gemini_models, video_path),
+            retries=1,
+        )
+        return {
+            "duration": duration,
+            "transcript": gem["transcript"],
+            "transcript_translated": gem["transcript_translated"],
+            "video_language": gem["video_language"],
+        }
+    finally:
+        if video_path.exists():
+            try:
+                video_path.unlink()
+            except OSError:
+                pass
+
+
+def _get_or_analyze_video(
+    video_key: str,
+    video_url: str,
+    safe_id: str,
+    gemini_models: List[str],
+    no_transcript: bool,
+    video_cache: Dict[str, "Future[Dict[str, Any]]"],
+    video_cache_lock: threading.Lock,
+) -> Dict[str, Any]:
+    """Thread-safe video analysis với dedup qua Future.
+
+    Thread đầu tiên claim video_key sẽ thực sự tải+phân tích; các thread khác đang
+    cần cùng video_key sẽ block chờ trên Future. Nếu owner fail, Future bị xóa
+    khỏi cache để thread kế tiếp (hoặc retry) có thể thử lại.
+    """
+    if not video_key:
+        return _analyze_video_download_and_gemini(video_url, safe_id, gemini_models, no_transcript)
+
+    with video_cache_lock:
+        fut = video_cache.get(video_key)
+        if fut is None:
+            fut = Future()
+            video_cache[video_key] = fut
+            owner = True
+        else:
+            owner = False
+
+    if owner:
+        try:
+            result = _analyze_video_download_and_gemini(video_url, safe_id, gemini_models, no_transcript)
+            fut.set_result(result)
+            return result
+        except Exception as e:
+            with video_cache_lock:
+                if video_cache.get(video_key) is fut:
+                    del video_cache[video_key]
+            fut.set_exception(e)
+            raise
+    else:
+        return fut.result()
+
+
+def build_row(parent_countries: list[str], ad_dict: Dict[str, Any], creative: Dict[str, Any], gemini_models: List[str], video_cache: Dict[str, "Future[Dict[str, Any]]"], video_cache_lock: threading.Lock, no_transcript: bool = False) -> Dict[str, Any]:
     # Lấy ID phân tách rõ ràng cho Database
     parent_id = str(find_first_value(ad_dict, ["id", "ad_id", "ad_archive_id"]) or "")
     child_id = str(creative.get("child_ad_id") or parent_id)
@@ -780,47 +869,23 @@ def build_row(parent_countries: list[str], ad_dict: Dict[str, Any], creative: Di
 
     if not video_url or video_url == "":
         return row
-    
+
     video_key = canonical_video_key(video_url)
-    if video_key and video_key in video_analysis_cache:
-        cached = video_analysis_cache[video_key]
-        row["duration"] = cached["duration"]
-        row["transcript"] = cached["transcript"]
-        row["transcript_translated"] = cached["transcript_translated"]
-        row["video_language"] = cached["video_language"]
-        return row
-
     safe_id = re.sub(r"[^a-zA-Z0-9_-]", "_", child_id)[:80]
-    video_path = VIDEO_DIR / f"{safe_id}.mp4"
 
-    try:
-        retry_step("download_video", lambda: download_video(video_url, video_path), retries=2)
-        row["duration"] = probe_duration_seconds(video_path)
-
-        if no_transcript:
-            row["transcript"] = ""
-            row["transcript_translated"] = ""
-            row["video_language"] = ""
-        else:
-            gem = retry_step("gemini_transcribe_and_analyze", lambda: gemini_transcribe_and_analyze(gemini_models, video_path), retries=1)
-            row["transcript"] = gem["transcript"]
-            row["transcript_translated"] = gem["transcript_translated"]
-            row["video_language"] = gem["video_language"]
-
-        if video_key:
-            video_analysis_cache[video_key] = {
-                "duration": row["duration"],
-                "transcript": row["transcript"],
-                "transcript_translated": row["transcript_translated"],
-                "video_language": row["video_language"]
-            }
-    finally:
-        if video_path.exists():
-            try:
-                video_path.unlink()
-            except OSError:
-                pass
-
+    analysis = _get_or_analyze_video(
+        video_key=video_key,
+        video_url=video_url,
+        safe_id=safe_id,
+        gemini_models=gemini_models,
+        no_transcript=no_transcript,
+        video_cache=video_cache,
+        video_cache_lock=video_cache_lock,
+    )
+    row["duration"] = analysis["duration"]
+    row["transcript"] = analysis["transcript"]
+    row["transcript_translated"] = analysis["transcript_translated"]
+    row["video_language"] = analysis["video_language"]
     return row
 
 
@@ -945,7 +1010,77 @@ def _save_video_checkpoint(path: Path, payload: dict) -> None:
     tmp.replace(path)
 
 
-def run(page_link: Optional[str], page_id: Optional[str], output_dir: Path, max_ads: Optional[int] = None, country: str = "ALL", status: str = "ACTIVE", min_impressions: int = 100, no_transcript: bool = False, start_date: Optional[str] = None, end_date: Optional[str] = None):
+def _build_fallback_row(
+    countries_list: list[str],
+    ad_dict: Dict[str, Any],
+    creative: Dict[str, Any],
+    parent_key: str,
+    child_key: str,
+    gemini_models: List[str],
+) -> Dict[str, Any]:
+    """Fallback row khi build_row thất bại (lỗi mạng/video/Gemini).
+
+    Giữ nguyên mọi metadata text/audience, chỉ để trống các field cần video.
+    """
+    headline = str(creative.get("title") or pick_headline(ad_dict))
+    primary_text = str(creative.get("body") or pick_primary_text(ad_dict))
+    cta_text = str(creative.get("cta_text") or pick_cta_text(ad_dict))
+    cta_type = str(creative.get("cta_type") or pick_cta_type(ad_dict))
+    app_link = str(creative.get("link_url") or pick_app_link(ad_dict))
+
+    v_sd = creative.get("video_sd_url")
+    video_url = str(v_sd or creative.get("video_url") or creative.get("video_hd_url") or pick_video_url(ad_dict))
+    if video_url == "None":
+        video_url = ""
+
+    eu_reach = creative.get("eu_total_reach")
+    if eu_reach is None:
+        eu_reach = pick_eu_total_reach(ad_dict)
+
+    top3 = creative.get("top3_reach")
+    if top3 is None:
+        top3 = pick_top3_reach(ad_dict)
+    elif isinstance(top3, (dict, list)):
+        top3 = json.dumps(top3, ensure_ascii=False)
+
+    gender = creative.get("gender_audience")
+    if gender is None:
+        gender = pick_gender_audience(ad_dict)
+
+    age = creative.get("age_audience")
+    if age is None:
+        age = pick_age_audience(ad_dict)
+    elif isinstance(age, (dict, list)):
+        age = json.dumps(age, ensure_ascii=False)
+
+    c_countries = creative.get("countries")
+    merged_countries = c_countries if (isinstance(c_countries, list) and c_countries) else countries_list
+
+    return {
+        "ad_id_full": child_key,
+        "library_id_full": parent_key,
+        "crawl_date": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "countries": format_countries_display(merged_countries),
+        "headline": headline,
+        "headline_language": detect_text_language(headline, gemini_models),
+        "primary_text": primary_text,
+        "primary_text_language": detect_text_language(primary_text, gemini_models),
+        "video_url": video_url or "",
+        "duration": "",
+        "transcript": "",
+        "transcript_translated": "",
+        "video_language": "",
+        "gender_audience": str(gender),
+        "age_audience": str(age),
+        "reach (EU)": str(eu_reach),
+        "top3_reach": str(top3),
+        "cta_text": cta_text,
+        "cta_type": cta_type,
+        "app_link": app_link,
+    }
+
+
+def run(page_link: Optional[str], page_id: Optional[str], output_dir: Path, max_ads: Optional[int] = None, country: str = "ALL", status: str = "ACTIVE", min_impressions: int = 100, no_transcript: bool = False, start_date: Optional[str] = None, end_date: Optional[str] = None, concurrency: int = 4):
     output_dir.mkdir(parents=True, exist_ok=True)
     gemini_models = setup_gemini_models()
 
@@ -969,8 +1104,10 @@ def run(page_link: Optional[str], page_id: Optional[str], output_dir: Path, max_
             if vk and vk not in video_key_to_row_idx:
                 video_key_to_row_idx[vk] = i
 
-    # CƠ CHẾ CACHE CHÌA KHÓA: Giúp các thẻ con dùng chung 1 video chỉ bị phân tích AI 1 lần
-    video_analysis_cache = {}
+    # CƠ CHẾ CACHE CHÌA KHÓA (thread-safe): các thẻ con dùng chung 1 video chỉ bị
+    # tải + phân tích AI 1 lần; thread sau sẽ chờ trên Future của thread đầu tiên.
+    video_cache: Dict[str, "Future[Dict[str, Any]]"] = {}
+    video_cache_lock = threading.Lock()
 
     # -------------------------------------------------------------------------
     # BƯỚC 1: TIỀN XỬ LÝ - QUY ĐỔI NULL = 0 VÀ LỌC MIN_IMPRESSIONS
@@ -1032,102 +1169,123 @@ def run(page_link: Optional[str], page_id: Optional[str], output_dir: Path, max_
     for countries_list, ad_dict in filtered_ads:
         crawl_records.append({"countries": countries_list, "ad": ad_dict})
 
-    current_child_count = 0
-
     # -------------------------------------------------------------------------
-    # BƯỚC 2: CHẠY MAIN LOOP (KHÔNG KIỂM TRA LẠI REACH NỮA)
+    # BƯỚC 2: CHẠY MAIN LOOP SONG SONG (ThreadPoolExecutor)
+    # - Mỗi task = xử lý 1 thẻ con (1 creative).
+    # - Video cache dùng Future-pattern để tránh 2 thread cùng tải 1 video.
+    # - Rows/completed_ad_keys/failed_rows protected bằng state_lock.
+    # - Checkpoint save định kỳ mỗi CHECKPOINT_EVERY task hoàn thành.
     # -------------------------------------------------------------------------
-    for idx, (countries_list, ad_dict) in enumerate(filtered_ads, start=1):
+    tasks: List[Tuple[list[str], Dict[str, Any], Dict[str, Any], str, str]] = []
+    for countries_list, ad_dict in filtered_ads:
         parent_key = str(find_first_value(ad_dict, ["id", "ad_id", "ad_archive_id", "library_id"]) or "")
-        creatives = ad_dict.get("creatives")
-
-        for c_idx, creative in enumerate(creatives, start=1):
-            current_child_count += 1
+        for creative in ad_dict.get("creatives") or []:
             child_key = str(creative.get("child_ad_id") or parent_key)
-
-            print(f"[PROGRESS_REPORT] Đang xử lý thẻ số {current_child_count} / {total_child_cards} (ID: {child_key})", flush=True)
-
             if child_key and child_key in completed_ad_keys:
-                print(f"      -> [BỎ QUA] Thẻ này đã hoàn thành trước đó.", flush=True)
                 continue
+            tasks.append((countries_list, ad_dict, creative, parent_key, child_key))
 
-            try:
-                # Hàm build_row sẽ lo việc kiểm tra video_analysis_cache
-                row = retry_step("build_row", lambda c=countries_list, a=ad_dict, cr=creative: build_row(c, a, cr, gemini_models, video_analysis_cache, no_transcript), retries=2)
-                rows.append(row)
-            except Exception:
-                # Fallback tĩnh nếu lỗi mạng/video (giữ nguyên code cũ của bạn)
-                headline = str(creative.get("title") or pick_headline(ad_dict))
-                primary_text = str(creative.get("body") or pick_primary_text(ad_dict))
-                cta_text = str(creative.get("cta_text") or pick_cta_text(ad_dict))
-                cta_type = str(creative.get("cta_type") or pick_cta_type(ad_dict))
-                app_link = str(creative.get("link_url") or pick_app_link(ad_dict))
-                
-                v_sd = creative.get("video_sd_url")
-                video_url = str(v_sd or creative.get("video_url") or creative.get("video_hd_url") or pick_video_url(ad_dict))
-                if video_url == "None": video_url = ""
-                
-                eu_reach = creative.get("eu_total_reach")
-                if eu_reach is None: eu_reach = pick_eu_total_reach(ad_dict)
-                
-                top3 = creative.get("top3_reach")
-                if top3 is None: top3 = pick_top3_reach(ad_dict)
-                elif isinstance(top3, (dict, list)): top3 = json.dumps(top3, ensure_ascii=False)
-                
-                gender = creative.get("gender_audience")
-                if gender is None: gender = pick_gender_audience(ad_dict)
-                
-                age = creative.get("age_audience")
-                if age is None: age = pick_age_audience(ad_dict)
-                elif isinstance(age, (dict, list)): age = json.dumps(age, ensure_ascii=False)
+    if not tasks:
+        print(f"[PROGRESS_REPORT] Không có thẻ nào cần xử lý (tất cả đã hoàn thành ở checkpoint trước).", flush=True)
 
-                c_countries = creative.get("countries")
-                merged_countries = c_countries if (isinstance(c_countries, list) and c_countries) else countries_list
+    effective_concurrency = max(1, int(concurrency or 1))
+    state_lock = threading.Lock()
+    progress_counter = itertools.count(1)
+    CHECKPOINT_EVERY = 10
+    EXCEL_CHECKPOINT_EVERY = 40
 
-                rows.append({
-                    "ad_id_full": child_key,
-                    "library_id_full": parent_key,
-                    "crawl_date": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "countries": format_countries_display(merged_countries),
-                    "headline": headline,
-                    "headline_language": detect_text_language(headline, gemini_models),
-                    "primary_text": primary_text,
-                    "primary_text_language": detect_text_language(primary_text, gemini_models),
-                    "video_url": video_url or "",
-                    "duration": "",
-                    "transcript": "",
-                    "transcript_translated": "",
-                    "video_language": "",
-                    "gender_audience": str(gender),
-                    "age_audience": str(age),
-                    "reach (EU)": str(eu_reach),
-                    "top3_reach": str(top3),
-                    "cta_text": cta_text,
-                    "cta_type": cta_type,
-                    "app_link": app_link,
-                })
-                failed_rows += 1
+    def _save_json_checkpoint_snapshot() -> None:
+        with state_lock:
+            snapshot = {
+                "version": 1,
+                "input": {"kind": input_kind, "value": input_value},
+                "max_ads": max_ads,
+                "country": country,
+                "completed_ad_keys": sorted(completed_ad_keys),
+                "rows": list(rows),
+                "failed_rows": failed_rows,
+                "skipped_duplicate_videos": skipped_duplicate_videos,
+                "skipped_low_reach": skipped_low_reach,
+                "updated_at": dt.datetime.now().isoformat(),
+            }
+        try:
+            _save_video_checkpoint(ck_state_path, snapshot)
+        except Exception as save_err:
+            print(f"[WARN] Không thể lưu JSON checkpoint: {save_err}", file=sys.stderr, flush=True)
 
-            if child_key:
-                completed_ad_keys.add(child_key)
-
-        # LƯU CHECKPOINT: Đã dời ra ngoài vòng lặp Thẻ Con để tối ưu ổ cứng
-        _save_video_checkpoint(ck_state_path, {
-            "version": 1,
-            "input": {"kind": input_kind, "value": input_value},
-            "max_ads": max_ads,
-            "country": country,
-            "completed_ad_keys": sorted(completed_ad_keys),
-            "rows": rows,
-            "failed_rows": failed_rows,
-            "skipped_duplicate_videos": skipped_duplicate_videos,
-            "skipped_low_reach": skipped_low_reach,
-            "updated_at": dt.datetime.now().isoformat(),
-        })
-
-        if idx % 20 == 0 and rows:
+    def _save_excel_checkpoint_snapshot() -> None:
+        with state_lock:
+            snapshot_rows = list(rows)
+        if not snapshot_rows:
+            return
+        try:
+            df = pd.DataFrame(snapshot_rows)
+            for col in OUTPUT_COLUMNS:
+                if col not in df.columns:
+                    df[col] = ""
+            df = df[OUTPUT_COLUMNS]
             ck = output_dir / "meta_ads_checkpoint.xlsx"
-            pd.DataFrame(rows)[OUTPUT_COLUMNS].to_excel(ck, index=False)
+            df.to_excel(ck, index=False)
+        except Exception as exc_err:
+            print(f"[WARN] Không thể lưu Excel checkpoint: {exc_err}", file=sys.stderr, flush=True)
+
+    def _worker(countries_list, ad_dict, creative, parent_key, child_key):
+        current = next(progress_counter)
+        print(
+            f"[PROGRESS_REPORT] Đang xử lý thẻ số {current} / {total_child_cards} (ID: {child_key})",
+            flush=True,
+        )
+        try:
+            row = retry_step(
+                "build_row",
+                lambda: build_row(
+                    countries_list,
+                    ad_dict,
+                    creative,
+                    gemini_models,
+                    video_cache,
+                    video_cache_lock,
+                    no_transcript,
+                ),
+                retries=2,
+            )
+            return ("success", child_key, row)
+        except Exception as e:
+            print(
+                f"      -> [FALLBACK] Thẻ {child_key} lỗi khi phân tích video/Gemini: {e}",
+                file=sys.stderr,
+                flush=True,
+            )
+            fallback = _build_fallback_row(countries_list, ad_dict, creative, parent_key, child_key, gemini_models)
+            return ("failed", child_key, fallback)
+
+    completed_count = 0
+    if tasks:
+        with ThreadPoolExecutor(max_workers=effective_concurrency, thread_name_prefix="dogbot-video") as executor:
+            future_map = {executor.submit(_worker, *t): t for t in tasks}
+            for fut in as_completed(future_map):
+                try:
+                    outcome, child_key, row = fut.result()
+                except Exception as worker_err:
+                    print(f"[ERROR] Worker crash: {worker_err}", file=sys.stderr, flush=True)
+                    continue
+
+                with state_lock:
+                    rows.append(row)
+                    if outcome == "failed":
+                        failed_rows += 1
+                    if child_key:
+                        completed_ad_keys.add(child_key)
+                    completed_count += 1
+                    should_save_json = (completed_count % CHECKPOINT_EVERY == 0)
+                    should_save_excel = (completed_count % EXCEL_CHECKPOINT_EVERY == 0)
+
+                if should_save_json:
+                    _save_json_checkpoint_snapshot()
+                if should_save_excel:
+                    _save_excel_checkpoint_snapshot()
+
+    _save_json_checkpoint_snapshot()
 
     ts = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
     out_path = output_dir / f"meta_ads_{ts}.xlsx"
@@ -1170,16 +1328,23 @@ def main():
     ap.add_argument("--no-transcript", action="store_true")
     ap.add_argument("--start-date", type=str, default=None)
     ap.add_argument("--end-date", type=str, default=None)
+    ap.add_argument(
+        "--concurrency",
+        type=int,
+        default=4,
+        help="Số thread song song xử lý video/Gemini (default 4).",
+    )
     args = ap.parse_args()
 
     if bool(args.page_link) == bool(args.page_id):
         raise SystemExit("Provide exactly one of --page-link or --page-id")
 
     out_path, crawl_json_path, total, failed_rows, skipped_duplicate_videos, skipped_low_reach = run(
-        args.page_link, args.page_id, Path(args.output_dir), 
+        args.page_link, args.page_id, Path(args.output_dir),
         max_ads=args.max_ads, country=args.country, status=args.status,
         min_impressions=args.min_impressions, no_transcript=args.no_transcript,
-        start_date=args.start_date, end_date=args.end_date
+        start_date=args.start_date, end_date=args.end_date,
+        concurrency=args.concurrency,
     )
 
     print(json.dumps({

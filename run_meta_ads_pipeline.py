@@ -146,9 +146,16 @@ def _result_artifacts_exist(output_dir: Path, run: dict) -> bool:
     return bool(ep and ep.exists() and jp and jp.exists())
 
 
-def run_dogbot(run_dir: Path, dogbot_script: Path, item: InputItem, max_ads: int | None = None, country: str = "ALL", status: str = "ACTIVE", min_impressions: int = 100, no_transcript: bool = False, start_date: str = None, end_date: str = None) -> dict:
+def run_dogbot(run_dir: Path, dogbot_script: Path, item: InputItem, max_ads: int | None = None, country: str = "ALL", status: str = "ACTIVE", min_impressions: int = 100, no_transcript: bool = False, start_date: str = None, end_date: str = None, concurrency: int = 4) -> dict:
     output_dir = run_dir / "outputs"
-    cmd = ["python3", str(dogbot_script), "--output-dir", str(output_dir), "--country", country, "--status", status, "--min-impressions", str(min_impressions)]
+    cmd = [
+        "python3", str(dogbot_script),
+        "--output-dir", str(output_dir),
+        "--country", country,
+        "--status", status,
+        "--min-impressions", str(min_impressions),
+        "--concurrency", str(concurrency),
+    ]
     if no_transcript:
         cmd.append("--no-transcript")
     if start_date:
@@ -362,12 +369,13 @@ def run_pipeline_in_isolated_dir(
     inputs: list[InputItem],
     max_ads: int | None,
     fingerprint: str,
-    country: str = "ALL",    
+    country: str = "ALL",
     status: str = "ACTIVE",
     min_impressions: int = 100,
     no_transcript: bool = False,
     start_date: str = None,
-    end_date: str = None
+    end_date: str = None,
+    concurrency: int = 4,
 ) -> dict:
     
     output_dir = run_dir / "outputs"
@@ -394,7 +402,7 @@ def run_pipeline_in_isolated_dir(
             runs.append(reused)
             continue
 
-        r = run_dogbot(run_dir, dogbot_script, item, max_ads=max_ads, country=country, status=status, min_impressions=min_impressions, no_transcript=no_transcript, start_date=start_date, end_date=end_date)
+        r = run_dogbot(run_dir, dogbot_script, item, max_ads=max_ads, country=country, status=status, min_impressions=min_impressions, no_transcript=no_transcript, start_date=start_date, end_date=end_date, concurrency=concurrency)
         runs.append(r)
 
         state["runs"] = runs
@@ -444,6 +452,12 @@ def main() -> None:
     ap.add_argument("--no-transcript", action="store_true")
     ap.add_argument("--start-date", type=str, default=None)
     ap.add_argument("--end-date", type=str, default=None)
+    ap.add_argument(
+        "--concurrency",
+        type=int,
+        default=4,
+        help="Số thread song song trong dogbot (default 4).",
+    )
     args = ap.parse_args()
 
     ensure_dependencies()
@@ -477,12 +491,13 @@ def main() -> None:
             inputs=inputs,
             max_ads=args.max_ads,
             fingerprint=fingerprint,
-            country=args.country,  
+            country=args.country,
             status=args.status,
             min_impressions=args.min_impressions,
             no_transcript=args.no_transcript,
             start_date=args.start_date,
-            end_date=args.end_date
+            end_date=args.end_date,
+            concurrency=args.concurrency,
         )
     except Exception as e:
         logging.error(f"Pipeline execution failed with unhandled exception: {e}", exc_info=True)

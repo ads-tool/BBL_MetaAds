@@ -26,23 +26,25 @@ tasks_db: Dict[str, dict] = {}
 
 class PipelineInput(BaseModel):
     raw_text: str
-    country: str = "Tất cả"      
-    status: str = "Đang chạy"     
-    min_impressions: int = 100    
-    no_transcript: bool = False 
+    country: str = "Tất cả"
+    status: str = "Đang chạy"
+    min_impressions: int = 100
+    no_transcript: bool = False
     start_date: Optional[str] = None
     end_date: Optional[str] = None
+    concurrency: int = 4
 
-def run_pipeline_worker(task_id: str, raw_input: str, iso_country: str, meta_status: str, min_impressions: int, no_transcript: bool, start_date: str = None, end_date: str = None):
+def run_pipeline_worker(task_id: str, raw_input: str, iso_country: str, meta_status: str, min_impressions: int, no_transcript: bool, start_date: str = None, end_date: str = None, concurrency: int = 4):
     tasks_db[task_id]["status"] = "PROCESSING"
     tasks_db[task_id]["current_action"] = "Đang khởi tạo trình duyệt và kết nối Meta Library..."
-    
+
     cmd = [
         sys.executable, "run_meta_ads_pipeline.py",
         "--input", raw_input,
         "--country", iso_country,
         "--status", meta_status,
-        "--min-impressions", str(min_impressions) 
+        "--min-impressions", str(min_impressions),
+        "--concurrency", str(concurrency),
     ]
 
     if no_transcript:
@@ -145,6 +147,8 @@ async def trigger_pipeline(payload: PipelineInput):
         
     task_id = str(uuid.uuid4())
     
+    safe_concurrency = max(1, min(int(payload.concurrency or 4), 16))
+
     tasks_db[task_id] = {
         "status": "PENDING",
         "current_action": "Đang đưa vào hàng đợi...",
@@ -153,11 +157,12 @@ async def trigger_pipeline(payload: PipelineInput):
         "mapped_status": meta_status,
         "min_impressions": payload.min_impressions,
         "start_date": start_date,
-        "end_date": end_date
+        "end_date": end_date,
+        "concurrency": safe_concurrency,
     }
-    
+
     loop = asyncio.get_running_loop()
-    loop.run_in_executor(executor, run_pipeline_worker, task_id, payload.raw_text, iso_country, meta_status, payload.min_impressions, payload.no_transcript, start_date, end_date)
+    loop.run_in_executor(executor, run_pipeline_worker, task_id, payload.raw_text, iso_country, meta_status, payload.min_impressions, payload.no_transcript, start_date, end_date, safe_concurrency)
     
     return {
         "task_id": task_id, 
