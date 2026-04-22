@@ -288,7 +288,10 @@ def detect_text_language_with_gemini(model_names: List[str], text: str) -> str:
         for model_name in model_names:
             try:
                 model = genai.GenerativeModel(model_name)
-                rsp = model.generate_content(prompt)
+                rsp = model.generate_content(
+                    [prompt, uploaded],
+                    request_options={"timeout": 300}
+                )
                 code = (rsp.text or "").strip().lower()
                 code = re.sub(r"[^a-z-]", "", code)
                 if 2 <= len(code) <= 5:
@@ -490,10 +493,11 @@ def extract_audio_from_video(video_path: Path) -> Path:
 def gemini_transcribe_and_analyze(model_names: List[str], video_path: Path) -> Dict[str, Any]:
     prompt = (
         "Transcribe this audio. Return strict JSON with keys: "
-        "transcript (original language), "
-        "transcript_translated (to Vietnamese), and "
+        "transcript (ORIGINAL LANGUAGE), "
+        "transcript_translated (TRANSLATE TO VIETNAMESE), and "
         "video_language (full language name, e.g., 'English', 'Vietnamese'). "
-        "If no speech, all values should be 'N/A'. "
+        "If no speech, all values should be empty string. "
+        "REMEMBER TO TRANSLATE IT TO VIETNAMESE AND RETURN THE TRANSLATED TEXT IN THE transcript_translated KEY."
         "Do not include markdown fences."
     )
 
@@ -508,14 +512,17 @@ def gemini_transcribe_and_analyze(model_names: List[str], video_path: Path) -> D
             for model_name in model_names:
                 try:
                     model = genai.GenerativeModel(model_name)
-                    rsp = model.generate_content([prompt, uploaded])
+                    rsp = model.generate_content(
+                        [prompt, uploaded],
+                        request_options={"timeout": 300}
+                    )
                     txt = (rsp.text or "").strip()
                     txt = re.sub(r"^```json\s*|\s*```$", "", txt, flags=re.MULTILINE)
                     data = json.loads(txt)
                     return {
-                        "transcript": data.get("transcript", "N/A") or "N/A",
-                        "transcript_translated": data.get("transcript_translated", "N/A") or "N/A",
-                        "video_language": data.get("video_language", "N/A") or "N/A",
+                        "transcript": data.get("transcript", "") or "",
+                        "transcript_translated": data.get("transcript_translated", "") or "",
+                        "video_language": data.get("video_language", "") or "",
                     }
                 except Exception as e:
                     last_err = e
@@ -795,7 +802,10 @@ def _get_or_analyze_video(
             fut.set_exception(e)
             raise
     else:
-        return fut.result()
+        try:
+            return fut.result(timeout=300) 
+        except TimeoutError:
+            raise RuntimeError(f"Chờ phân tích video {video_key} quá lâu (timeout).")
 
 
 def build_row(parent_countries: list[str], ad_dict: Dict[str, Any], creative: Dict[str, Any], gemini_models: List[str], video_cache: Dict[str, "Future[Dict[str, Any]]"], video_cache_lock: threading.Lock, no_transcript: bool = False) -> Dict[str, Any]:
