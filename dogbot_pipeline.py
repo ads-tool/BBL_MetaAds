@@ -290,7 +290,7 @@ def detect_text_language_with_gemini(model_names: List[str], text: str) -> str:
                 model = genai.GenerativeModel(model_name)
                 rsp = model.generate_content(
                     [prompt, uploaded],
-                    request_options={"timeout": 300}
+                    request_options={"timeout": 180}
                 )
                 code = (rsp.text or "").strip().lower()
                 code = re.sub(r"[^a-z-]", "", code)
@@ -514,7 +514,7 @@ def gemini_transcribe_and_analyze(model_names: List[str], video_path: Path) -> D
                     model = genai.GenerativeModel(model_name)
                     rsp = model.generate_content(
                         [prompt, uploaded],
-                        request_options={"timeout": 300}
+                        request_options={"timeout": 180}
                     )
                     txt = (rsp.text or "").strip()
                     txt = re.sub(r"^```json\s*|\s*```$", "", txt, flags=re.MULTILINE)
@@ -803,7 +803,7 @@ def _get_or_analyze_video(
             raise
     else:
         try:
-            return fut.result(timeout=300) 
+            return fut.result(timeout=180) 
         except TimeoutError:
             raise RuntimeError(f"Chờ phân tích video {video_key} quá lâu (timeout).")
 
@@ -1257,7 +1257,7 @@ def run(page_link: Optional[str], page_id: Optional[str], output_dir: Path, max_
                     video_cache_lock,
                     no_transcript,
                 ),
-                retries=2,
+                retries=1,
             )
             return ("success", child_key, row)
         except Exception as e:
