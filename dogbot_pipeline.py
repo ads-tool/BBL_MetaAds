@@ -510,23 +510,24 @@ def gemini_transcribe_and_analyze(model_names: List[str], video_path: Path) -> D
             uploaded = wait_for_uploaded_file_active(uploaded, timeout_seconds=180)
             last_err = None
             for model_name in model_names:
-                try:
-                    model = genai.GenerativeModel(model_name)
-                    rsp = model.generate_content(
-                        [prompt, uploaded],
-                        request_options={"timeout": 180}
-                    )
-                    txt = (rsp.text or "").strip()
-                    txt = re.sub(r"^```json\s*|\s*```$", "", txt, flags=re.MULTILINE)
-                    data = json.loads(txt)
-                    return {
-                        "transcript": data.get("transcript", "") or "",
-                        "transcript_translated": data.get("transcript_translated", "") or "",
-                        "video_language": data.get("video_language", "") or "",
-                    }
-                except Exception as e:
-                    last_err = e
-                    continue
+                if(model_name in ["gemini-2.5-flash-lite", "gemini-2.5-flash"]):
+                    try:
+                        model = genai.GenerativeModel(model_name)
+                        rsp = model.generate_content(
+                            [prompt, uploaded],
+                            request_options={"timeout": 180}
+                        )
+                        txt = (rsp.text or "").strip()
+                        txt = re.sub(r"^```json\s*|\s*```$", "", txt, flags=re.MULTILINE)
+                        data = json.loads(txt)
+                        return {
+                            "transcript": data.get("transcript", "") or "",
+                            "transcript_translated": data.get("transcript_translated", "") or "",
+                            "video_language": data.get("video_language", "") or "",
+                        }
+                    except Exception as e:
+                        last_err = e
+                        continue
             raise RuntimeError(f"All Gemini models failed. Last error: {last_err}")
 
         return retry_step("gemini_analyze_audio", _do, retries=1)
@@ -725,36 +726,53 @@ def _analyze_video_download_and_gemini(
     gemini_models: List[str],
     no_transcript: bool,
 ) -> Dict[str, Any]:
-    """Download 1 video, probe duration, (optional) transcribe qua Gemini.
-
-    Trả về dict {duration, transcript, transcript_translated, video_language}.
-    Luôn cleanup file video tạm trong finally. An toàn gọi song song từ nhiều thread
-    vì safe_id là duy nhất cho mỗi creative (child_ad_id).
-    """
     video_path = VIDEO_DIR / f"{safe_id}.mp4"
+    
+    # Khởi tạo kết quả mặc định
+    result = {
+        "duration": 0,
+        "transcript": "",
+        "transcript_translated": "",
+        "video_language": "",
+    }
+
     try:
+        # 1. Download
         retry_step("download_video", lambda: download_video(video_url, video_path), retries=2)
+        
+        # 2. Probe duration
         duration = probe_duration_seconds(video_path)
+        if duration:
+            result["duration"] = int(duration)
+        else:
+            result["duration"] = 0
 
+        # 3. Kiểm tra điều kiện dừng sớm
         if no_transcript:
-            return {
-                "duration": duration,
-                "transcript": "",
-                "transcript_translated": "",
-                "video_language": "",
-            }
+            return result
+            
+        if result["duration"] >= 600: 
+            result["transcript"] = "Thời lượng video vượt quá 10 phút, không phân tích được nội dung."
+            return result
 
+        # 4. Gemini xử lý
         gem = retry_step(
             "gemini_transcribe_and_analyze",
             lambda: gemini_transcribe_and_analyze(gemini_models, video_path),
             retries=1,
         )
-        return {
-            "duration": duration,
-            "transcript": gem["transcript"],
-            "transcript_translated": gem["transcript_translated"],
-            "video_language": gem["video_language"],
-        }
+        
+        # Cập nhật kết quả từ Gemini
+        result.update({
+            "transcript": gem.get("transcript", ""),
+            "transcript_translated": gem.get("transcript_translated", ""),
+            "video_language": gem.get("video_language", ""),
+        })
+        return result
+
+    except Exception as e:
+        print(f"Error processing video {safe_id}: {e}")
+        return result 
     finally:
         if video_path.exists():
             try:
@@ -781,6 +799,7 @@ def _get_or_analyze_video(
     if not video_key:
         return _analyze_video_download_and_gemini(video_url, safe_id, gemini_models, no_transcript)
 
+    fut = None
     with video_cache_lock:
         fut = video_cache.get(video_key)
         if fut is None:
