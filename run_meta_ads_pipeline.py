@@ -17,6 +17,7 @@ import select
 import io
 import logging
 from typing import Optional
+from const import NUM_CONCURRENCY
 
 # Set up basic logging
 logging.basicConfig(stream=sys.stderr, level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -146,7 +147,7 @@ def _result_artifacts_exist(output_dir: Path, run: dict) -> bool:
     return bool(ep and ep.exists() and jp and jp.exists())
 
 
-def run_dogbot(run_dir: Path, dogbot_script: Path, item: InputItem, max_ads: int | None = None, country: str = "ALL", status: str = "ACTIVE", min_impressions: int = 100, no_transcript: bool = False, start_date: str = None, end_date: str = None, concurrency: int = 4) -> dict:
+def run_dogbot(run_dir: Path, dogbot_script: Path, item: InputItem, max_ads: int | None = None, country: str = "ALL", status: str = "ACTIVE", min_impressions: int = 100, no_transcript: bool = False, start_date: str = None, end_date: str = None, concurrency: int = NUM_CONCURRENCY) -> dict:
     output_dir = run_dir / "outputs"
     cmd = [
         "python3", str(dogbot_script),
@@ -375,7 +376,7 @@ def run_pipeline_in_isolated_dir(
     no_transcript: bool = False,
     start_date: str = None,
     end_date: str = None,
-    concurrency: int = 4,
+    concurrency: int = NUM_CONCURRENCY,
 ) -> dict:
     
     output_dir = run_dir / "outputs"
@@ -455,8 +456,8 @@ def main() -> None:
     ap.add_argument(
         "--concurrency",
         type=int,
-        default=4,
-        help="Số thread song song trong dogbot (default 4).",
+        default=NUM_CONCURRENCY,
+        help=f"Số thread song song trong dogbot (default {NUM_CONCURRENCY}).",
     )
     args = ap.parse_args()
 

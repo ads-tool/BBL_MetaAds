@@ -8,7 +8,7 @@ import psycopg2
 import re
 from datetime import datetime
 from db_ingest import ingest_excel_to_postgres
-from const import COUNTRY_MAPPING, STATUS_MAPPING
+from const import COUNTRY_MAPPING, STATUS_MAPPING, NUM_CONCURRENCY
 from typing import Dict, Optional
 from pydantic import BaseModel
 from concurrent.futures import ThreadPoolExecutor
@@ -32,9 +32,9 @@ class PipelineInput(BaseModel):
     no_transcript: bool = False
     start_date: Optional[str] = None
     end_date: Optional[str] = None
-    concurrency: int = 4
+    concurrency: int = NUM_CONCURRENCY
 
-def run_pipeline_worker(task_id: str, raw_input: str, iso_country: str, meta_status: str, min_impressions: int, no_transcript: bool, start_date: str = None, end_date: str = None, concurrency: int = 4):
+def run_pipeline_worker(task_id: str, raw_input: str, iso_country: str, meta_status: str, min_impressions: int, no_transcript: bool, start_date: str = None, end_date: str = None, concurrency: int = NUM_CONCURRENCY):
     tasks_db[task_id]["status"] = "PROCESSING"
     tasks_db[task_id]["current_action"] = "Đang khởi tạo trình duyệt và kết nối Meta Library..."
 
@@ -147,7 +147,7 @@ async def trigger_pipeline(payload: PipelineInput):
         
     task_id = str(uuid.uuid4())
     
-    safe_concurrency = max(1, min(int(payload.concurrency or 4), 16))
+    safe_concurrency = max(1, min(int(payload.concurrency or NUM_CONCURRENCY), 16))
 
     tasks_db[task_id] = {
         "status": "PENDING",

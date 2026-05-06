@@ -15,3 +15,5 @@ STATUS_MAPPING = {
     "Không hoạt động": "INACTIVE",
     "Tất cả": "ALL"
 }
+
+NUM_CONCURRENCY = 1

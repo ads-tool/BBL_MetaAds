@@ -10,3 +10,4 @@ google-generativeai
 langdetect
 pycountry
 python-dotenv
+google-cloud-aiplatform

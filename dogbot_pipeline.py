@@ -14,6 +14,8 @@ import time
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+import vertexai
+from vertexai.generative_models import GenerativeModel, Part
 
 import pandas as pd
 import requests
@@ -35,7 +37,8 @@ except Exception:
     genai = None
 
 from dotenv import load_dotenv
-load_dotenv()
+from const import NUM_CONCURRENCY
+load_dotenv(override=True)
 
 
 def check_ffmpeg_installed():
@@ -283,28 +286,51 @@ def detect_text_language_with_gemini(model_names: List[str], text: str) -> str:
         f"{t}"
     )
 
-    def _do():
-        last_err = None
+    max_retries = 3
+    last_err = None
+
+    for attempt in range(1, max_retries + 1):
         for model_name in model_names:
             try:
-                model = genai.GenerativeModel(model_name)
-                rsp = model.generate_content(
-                    [prompt, uploaded],
-                    request_options={"timeout": 180}
-                )
+                model = GenerativeModel(model_name)
+                # Vertex AI truyền nội dung text trực tiếp
+                rsp = model.generate_content([prompt])
+                
                 code = (rsp.text or "").strip().lower()
                 code = re.sub(r"[^a-z-]", "", code)
+                
+                # Nếu độ dài hợp lệ (ví dụ: en, vi, zho...)
                 if 2 <= len(code) <= 5:
                     return code
+                return "und" # Nếu AI trả ra cái gì đó kỳ lạ, đánh dấu là không xác định
+                
             except Exception as e:
                 last_err = e
+                # Nếu gặp lỗi 429, thoát khỏi vòng lặp model để chuyển sang luồng Retry chờ đợi
+                if "429" in str(e):
+                    break 
+                # Nếu gặp lỗi khác (ví dụ 404, 500), tiếp tục thử model dự phòng tiếp theo
                 continue
-        raise RuntimeError(f"Language detect via Gemini failed: {last_err}")
 
-    try:
-        return retry_step("detect_language_gemini", _do, retries=2)
-    except Exception:
-        return ""
+        # Sau khi thử các model, tiến hành kiểm tra lỗi
+        err_str = str(last_err)
+        
+        if "429" in err_str:
+            if attempt < max_retries:
+                # Text nhẹ hơn nên chỉ ngủ 5s, 10s
+                sleep_time = 5 * attempt 
+                print(f"[RETRY TEXT] Gặp lỗi 429 Rate Limit. Chờ {sleep_time}s trước khi thử lại lần {attempt}/{max_retries}...", file=sys.stderr)
+                time.sleep(sleep_time)
+                continue
+            else:
+                print(f"[WARN] Bỏ qua nhận diện ngôn ngữ: Đã thử {max_retries} lần nhưng vẫn bị chặn 429.", file=sys.stderr)
+                return ""
+        elif last_err:
+            # Lỗi cứng, log ra để biết nhưng không làm sập chương trình
+            print(f"[WARN] Lỗi Vertex AI khi nhận diện ngôn ngữ (không phải 429): {last_err}", file=sys.stderr)
+            return ""
+
+    return ""
 
 
 def detect_text_language(text: str, gemini_models: Optional[List[str]] = None) -> str:
@@ -431,12 +457,13 @@ def probe_duration_seconds(video_path: Path) -> str:
 
 
 def setup_gemini_models() -> List[str]:
-    key = os.getenv("GEMINI_API_KEY")
-    if not key:
-        raise RuntimeError("Missing GEMINI_API_KEY env var")
-    if genai is None:
-        raise RuntimeError("google-generativeai not installed")
-    genai.configure(api_key=key)
+    project_id = os.getenv("GCP_PROJECT_ID")
+    location = os.getenv("GCP_LOCATION", "asia-southeast1")
+    
+    if not project_id:
+        raise RuntimeError("Missing GCP_PROJECT_ID env var for Vertex AI")
+    
+    vertexai.init(project=project_id, location=location)
 
     # User requirement: prioritize Gemini 2.5 Flash for video analysis.
     # Keep fallbacks to avoid hard failure if temporary model/API issues occur.
@@ -444,7 +471,7 @@ def setup_gemini_models() -> List[str]:
         "gemini-2.5-flash-lite",
         "gemini-2.5-flash",
         "gemini-flash-latest",
-        "gemini-2.5-pro",
+        # "gemini-2.5-pro",
     ]
 
 
@@ -504,35 +531,56 @@ def gemini_transcribe_and_analyze(model_names: List[str], video_path: Path) -> D
     audio_path = None
     try:
         audio_path = extract_audio_from_video(video_path)
+        
+        # Đọc byte audio một lần duy nhất để tiết kiệm I/O
+        with open(audio_path, "rb") as f:
+            audio_bytes = f.read()
+            
+        # Lưu ý: Tôi đã sửa audio/mp3 thành audio/mpeg cho đúng chuẩn MIME type của Google Cloud
+        audio_part = Part.from_data(mime_type="audio/mpeg", data=audio_bytes)
 
-        def _do():
-            uploaded = genai.upload_file(path=str(audio_path))
-            uploaded = wait_for_uploaded_file_active(uploaded, timeout_seconds=180)
-            last_err = None
+        max_retries = 3
+        last_err = None
+        
+        for attempt in range(1, max_retries + 1):
             for model_name in model_names:
-                if(model_name in ["gemini-2.5-flash-lite", "gemini-2.5-flash"]):
-                    try:
-                        model = genai.GenerativeModel(model_name)
-                        rsp = model.generate_content(
-                            [prompt, uploaded],
-                            request_options={"timeout": 180}
-                        )
-                        txt = (rsp.text or "").strip()
-                        txt = re.sub(r"^```json\s*|\s*```$", "", txt, flags=re.MULTILINE)
-                        data = json.loads(txt)
-                        return {
-                            "transcript": data.get("transcript", "") or "",
-                            "transcript_translated": data.get("transcript_translated", "") or "",
-                            "video_language": data.get("video_language", "") or "",
-                        }
-                    except Exception as e:
-                        last_err = e
-                        continue
-            raise RuntimeError(f"All Gemini models failed. Last error: {last_err}")
+                try:
+                    model = GenerativeModel(model_name)
+                    rsp = model.generate_content([prompt, audio_part])
+                    
+                    txt = (rsp.text or "").strip()
+                    txt = re.sub(r"^```json\s*|\s*```$", "", txt, flags=re.MULTILINE)
+                    data = json.loads(txt)
+                    return {
+                        "transcript": data.get("transcript", "") or "",
+                        "transcript_translated": data.get("transcript_translated", "") or "",
+                        "video_language": data.get("video_language", "") or "",
+                    }
+                except Exception as e:
+                    last_err = e
+                    # Nếu gặp lỗi 429, thoát khỏi vòng lặp model dự phòng để kích hoạt luồng Retry
+                    if "429" in str(e):
+                        break 
+                    # Nếu lỗi khác (ví dụ 404 Model không tồn tại), tiếp tục thử model dự phòng tiếp theo
+                    continue 
 
-        return retry_step("gemini_analyze_audio", _do, retries=1)
+            err_str = str(last_err)
+            
+            # KIỂM TRA LỖI SAU KHI THỬ CÁC MODEL
+            if "429" in err_str:
+                if attempt < max_retries:
+                    # Cơ chế Exponential Backoff: Ngủ lâu hơn sau mỗi lần thất bại (10s -> 20s)
+                    sleep_time = 5 * attempt 
+                    print(f"[RETRY] Gặp lỗi 429 Rate Limit. Chờ {sleep_time}s trước khi thử lại lần {attempt}/{max_retries}...", file=sys.stderr)
+                    time.sleep(sleep_time)
+                    continue
+                else:
+                    raise RuntimeError(f"Hủy bỏ: Đã thử {max_retries} lần nhưng vẫn bị chặn bởi lỗi 429 (Resource exhausted).")
+            else:
+                # Nếu là lỗi cứng (401 Auth, 404 Not Found...), DỪNG NGAY LẬP TỨC, không retry tốn thời gian
+                raise RuntimeError(f"Vertex AI gặp lỗi nghiêm trọng (không phải 429). Lỗi: {last_err}")
+                
     finally:
-        # Clean up the temporary audio file
         if audio_path and audio_path.exists():
             try:
                 audio_path.unlink()
@@ -1109,7 +1157,7 @@ def _build_fallback_row(
     }
 
 
-def run(page_link: Optional[str], page_id: Optional[str], output_dir: Path, max_ads: Optional[int] = None, country: str = "ALL", status: str = "ACTIVE", min_impressions: int = 100, no_transcript: bool = False, start_date: Optional[str] = None, end_date: Optional[str] = None, concurrency: int = 4):
+def run(page_link: Optional[str], page_id: Optional[str], output_dir: Path, max_ads: Optional[int] = None, country: str = "ALL", status: str = "ACTIVE", min_impressions: int = 100, no_transcript: bool = False, start_date: Optional[str] = None, end_date: Optional[str] = None, concurrency: int = NUM_CONCURRENCY):
     output_dir.mkdir(parents=True, exist_ok=True)
     gemini_models = setup_gemini_models()
 
@@ -1217,7 +1265,7 @@ def run(page_link: Optional[str], page_id: Optional[str], output_dir: Path, max_
     if not tasks:
         print(f"[PROGRESS_REPORT] Không có thẻ nào cần xử lý (tất cả đã hoàn thành ở checkpoint trước).", flush=True)
 
-    effective_concurrency = max(1, int(concurrency or 1))
+    effective_concurrency = max(1, int(concurrency or NUM_CONCURRENCY))
     state_lock = threading.Lock()
     progress_counter = itertools.count(1)
     CHECKPOINT_EVERY = 10
@@ -1360,8 +1408,8 @@ def main():
     ap.add_argument(
         "--concurrency",
         type=int,
-        default=4,
-        help="Số thread song song xử lý video/Gemini (default 4).",
+        default=NUM_CONCURRENCY,
+        help="Số thread song song xử lý video/Gemini (default NUM_CONCURRENCY).",
     )
     args = ap.parse_args()
 
