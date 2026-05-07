@@ -318,7 +318,7 @@ def detect_text_language_with_gemini(model_names: List[str], text: str) -> str:
         if "429" in err_str:
             if attempt < max_retries:
                 # Text nhẹ hơn nên chỉ ngủ 5s, 10s
-                sleep_time = 5 * attempt 
+                sleep_time = 10 * attempt 
                 print(f"[RETRY TEXT] Gặp lỗi 429 Rate Limit. Chờ {sleep_time}s trước khi thử lại lần {attempt}/{max_retries}...", file=sys.stderr)
                 time.sleep(sleep_time)
                 continue
@@ -570,7 +570,7 @@ def gemini_transcribe_and_analyze(model_names: List[str], video_path: Path) -> D
             if "429" in err_str:
                 if attempt < max_retries:
                     # Cơ chế Exponential Backoff: Ngủ lâu hơn sau mỗi lần thất bại (10s -> 20s)
-                    sleep_time = 5 * attempt 
+                    sleep_time = 10 * attempt 
                     print(f"[RETRY] Gặp lỗi 429 Rate Limit. Chờ {sleep_time}s trước khi thử lại lần {attempt}/{max_retries}...", file=sys.stderr)
                     time.sleep(sleep_time)
                     continue
