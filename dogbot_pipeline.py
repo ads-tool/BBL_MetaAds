@@ -40,6 +40,82 @@ from dotenv import load_dotenv
 from const import NUM_CONCURRENCY
 load_dotenv(override=True)
 
+def extract_visual_clip_from_video(video_path: Path, cut_duration: int) -> Path:
+    """Sử dụng ffmpeg để cắt đoạn video ngắn (bỏ âm thanh) nhằm phục vụ OCR."""
+    clip_path = video_path.with_name(video_path.stem + "_clip.mp4")
+    cmd = [
+        "ffmpeg",
+        "-i", str(video_path),
+        "-t", str(cut_duration),
+        "-an",               # Bỏ hoàn toàn luồng âm thanh để AI tập trung nhìn hình
+        "-c:v", "libx264",   # Re-encode chuẩn x264 để file siêu nhẹ và đảm bảo cắt chính xác
+        "-preset", "fast",
+        "-crf", "28",
+        "-y",
+        str(clip_path),
+    ]
+    try:
+        subprocess.run(cmd, capture_output=True, text=True, check=True, encoding='utf-8', errors='replace')
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"ffmpeg failed to extract visual clip: {e.stderr}")
+    
+    return clip_path
+
+
+def gemini_detect_visual_language(model_names: List[str], clip_path: Path) -> str:
+    """Gửi đoạn video ngắn lên Gemini để đọc chữ và trả về ngôn ngữ."""
+    prompt = """
+Look at the LONG TEXT ONLY (headline, primary text,.. if it exists) appearing in this video and identify its language.
+
+### CONSTRAINTS:
+
+1. Return ONLY the language name in English (e.g., English, Vietnamese, Thai).
+
+2. STRICTURE: You must be 100% certain of the language identification. If there is any ambiguity, blurriness, or if the text is too brief to be identified with absolute certainty, you MUST return EXACTLY the string 'UNKNOWN'.
+
+3. Do not provide explanations, notes, or any other text.
+
+4. If there is no text in the video, return 'UNKNOWN'.
+
+Your output must be either the [Language Name] or 'UNKNOWN'. No exceptions.
+"""
+    models_names = [
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite",
+        "gemini-flash-latest",
+    ]
+    try:
+        with open(clip_path, "rb") as f:
+            video_bytes = f.read()
+        video_part = Part.from_data(mime_type="video/mp4", data=video_bytes)
+        
+        max_retries = 3
+        last_err = None
+        
+        for attempt in range(1, max_retries + 1):
+            for model_name in model_names:
+                try:
+                    model = GenerativeModel(model_name)
+                    rsp = model.generate_content([prompt, video_part])
+                    return (rsp.text or "").strip()
+                except Exception as e:
+                    last_err = e
+                    if "429" in str(e): break # Thoát vòng lặp model để chạy backoff
+                    continue 
+    
+            if "429" in str(last_err):
+                if attempt < max_retries:
+                    time.sleep(10 * attempt)
+                    continue
+                else:
+                    return "UNKNOWN" # Quá giới hạn rate limit thì Fallback về UNKNOWN
+            else:
+                return "UNKNOWN"
+                
+        return "UNKNOWN"
+    except Exception as general_err:
+        print(f"[WARN] Lỗi khi nhận diện visual language: {general_err}", file=sys.stderr)
+        return "UNKNOWN"
 
 def check_ffmpeg_installed():
     """Checks if ffmpeg is installed and provides installation instructions if not."""
@@ -517,75 +593,134 @@ def extract_audio_from_video(video_path: Path) -> Path:
     return audio_path
 
 
-def gemini_transcribe_and_analyze(model_names: List[str], video_path: Path) -> Dict[str, Any]:
-    prompt = (
-        "Transcribe this audio. Return strict JSON with keys: "
-        "transcript (ORIGINAL LANGUAGE), "
-        "transcript_translated (TRANSLATE TO VIETNAMESE), and "
-        "video_language (full language name, e.g., 'English', 'Vietnamese'). "
-        "If no speech, all values should be empty string. "
-        "REMEMBER TO TRANSLATE IT TO VIETNAMESE AND RETURN THE TRANSLATED TEXT IN THE transcript_translated KEY."
-        "Do not include markdown fences."
-    )
+# def gemini_transcribe_and_analyze(model_names: List[str], video_path: Path) -> Dict[str, Any]:
+#     prompt = (
+#         "Transcribe this audio. Return strict JSON with keys: "
+#         "transcript (ORIGINAL LANGUAGE), "
+#         "transcript_translated (TRANSLATE TO VIETNAMESE), and "
+#         "video_language (full language name, e.g., 'English', 'Vietnamese'). "
+#         "If no speech, all values should be empty string. "
+#         "REMEMBER TO TRANSLATE IT TO VIETNAMESE AND RETURN THE TRANSLATED TEXT IN THE transcript_translated KEY."
+#         "Do not include markdown fences."
+#     )
 
-    audio_path = None
-    try:
-        audio_path = extract_audio_from_video(video_path)
+#     audio_path = None
+#     try:
+#         audio_path = extract_audio_from_video(video_path)
         
-        # Đọc byte audio một lần duy nhất để tiết kiệm I/O
-        with open(audio_path, "rb") as f:
-            audio_bytes = f.read()
+#         # Đọc byte audio một lần duy nhất để tiết kiệm I/O
+#         with open(audio_path, "rb") as f:
+#             audio_bytes = f.read()
             
-        # Lưu ý: Tôi đã sửa audio/mp3 thành audio/mpeg cho đúng chuẩn MIME type của Google Cloud
-        audio_part = Part.from_data(mime_type="audio/mpeg", data=audio_bytes)
+#         # Lưu ý: Tôi đã sửa audio/mp3 thành audio/mpeg cho đúng chuẩn MIME type của Google Cloud
+#         audio_part = Part.from_data(mime_type="audio/mpeg", data=audio_bytes)
 
-        max_retries = 3
-        last_err = None
+#         max_retries = 3
+#         last_err = None
         
-        for attempt in range(1, max_retries + 1):
-            for model_name in model_names:
-                try:
-                    model = GenerativeModel(model_name)
-                    rsp = model.generate_content([prompt, audio_part])
+#         for attempt in range(1, max_retries + 1):
+#             for model_name in model_names:
+#                 try:
+#                     model = GenerativeModel(model_name)
+#                     rsp = model.generate_content([prompt, audio_part])
                     
-                    txt = (rsp.text or "").strip()
-                    txt = re.sub(r"^```json\s*|\s*```$", "", txt, flags=re.MULTILINE)
-                    data = json.loads(txt)
-                    return {
-                        "transcript": data.get("transcript", "") or "",
-                        "transcript_translated": data.get("transcript_translated", "") or "",
-                        "video_language": data.get("video_language", "") or "",
-                    }
-                except Exception as e:
-                    last_err = e
-                    # Nếu gặp lỗi 429, thoát khỏi vòng lặp model dự phòng để kích hoạt luồng Retry
-                    if "429" in str(e):
-                        break 
-                    # Nếu lỗi khác (ví dụ 404 Model không tồn tại), tiếp tục thử model dự phòng tiếp theo
-                    continue 
+#                     txt = (rsp.text or "").strip()
+#                     txt = re.sub(r"^```json\s*|\s*```$", "", txt, flags=re.MULTILINE)
+#                     data = json.loads(txt)
+#                     return {
+#                         "transcript": data.get("transcript", "") or "",
+#                         "transcript_translated": data.get("transcript_translated", "") or "",
+#                         "video_language": data.get("video_language", "") or "",
+#                     }
+#                 except Exception as e:
+#                     last_err = e
+#                     # Nếu gặp lỗi 429, thoát khỏi vòng lặp model dự phòng để kích hoạt luồng Retry
+#                     if "429" in str(e):
+#                         break 
+#                     # Nếu lỗi khác (ví dụ 404 Model không tồn tại), tiếp tục thử model dự phòng tiếp theo
+#                     continue 
 
-            err_str = str(last_err)
+#             err_str = str(last_err)
             
-            # KIỂM TRA LỖI SAU KHI THỬ CÁC MODEL
-            if "429" in err_str:
-                if attempt < max_retries:
-                    # Cơ chế Exponential Backoff: Ngủ lâu hơn sau mỗi lần thất bại (10s -> 20s)
-                    sleep_time = 10 * attempt 
-                    print(f"[RETRY] Gặp lỗi 429 Rate Limit. Chờ {sleep_time}s trước khi thử lại lần {attempt}/{max_retries}...", file=sys.stderr)
-                    time.sleep(sleep_time)
-                    continue
-                else:
-                    raise RuntimeError(f"Hủy bỏ: Đã thử {max_retries} lần nhưng vẫn bị chặn bởi lỗi 429 (Resource exhausted).")
-            else:
-                # Nếu là lỗi cứng (401 Auth, 404 Not Found...), DỪNG NGAY LẬP TỨC, không retry tốn thời gian
-                raise RuntimeError(f"Vertex AI gặp lỗi nghiêm trọng (không phải 429). Lỗi: {last_err}")
+#             # KIỂM TRA LỖI SAU KHI THỬ CÁC MODEL
+#             if "429" in err_str:
+#                 if attempt < max_retries:
+#                     # Cơ chế Exponential Backoff: Ngủ lâu hơn sau mỗi lần thất bại (10s -> 20s)
+#                     sleep_time = 10 * attempt 
+#                     print(f"[RETRY] Gặp lỗi 429 Rate Limit. Chờ {sleep_time}s trước khi thử lại lần {attempt}/{max_retries}...", file=sys.stderr)
+#                     time.sleep(sleep_time)
+#                     continue
+#                 else:
+#                     raise RuntimeError(f"Hủy bỏ: Đã thử {max_retries} lần nhưng vẫn bị chặn bởi lỗi 429 (Resource exhausted).")
+#             else:
+#                 # Nếu là lỗi cứng (401 Auth, 404 Not Found...), DỪNG NGAY LẬP TỨC, không retry tốn thời gian
+#                 raise RuntimeError(f"Vertex AI gặp lỗi nghiêm trọng (không phải 429). Lỗi: {last_err}")
                 
-    finally:
-        if audio_path and audio_path.exists():
+#     finally:
+#         if audio_path and audio_path.exists():
+#             try:
+#                 audio_path.unlink()
+#             except OSError:
+#                 pass
+
+def gemini_transcribe_and_analyze(model_names: List[str], audio_path: Path) -> Dict[str, Any]:
+    """Phân tích Audio theo 3 trường hợp."""
+    prompt = """
+You are an expert audio analyst. Listen to this audio file and classify it into 1 of 3 cases, then return EXACTLY ONE JSON OBJECT with 3 keys: 'transcript', 'transcript_translated', 'video_language'. 
+Do not use markdown fences (e.g., ```json). STRICTLY FOLLOW THESE RULES:
+
+CASE 1 - Background music only (no lyrics, no human speech):
+- transcript: "Lyrics: None"
+- transcript_translated: "Lyrics: Không có"
+- video_language: "UNKNOWN"
+
+CASE 2 - Music with lyrics (song):
+- transcript: "Lyrics: [Full original lyrics in original language]"
+- transcript_translated: "Lyrics: [Lyrics translated to VIETNAMESE]"
+- video_language: "[Language Name]"
+
+CASE 3 - Regular speech (people talking, voiceover):
+- transcript: "[Full original speech]"
+- transcript_translated: "[Full speech translated to VIETNAMESE]"
+- video_language: "[Language Name]"
+"""
+
+    with open(audio_path, "rb") as f:
+        audio_bytes = f.read()
+        
+    audio_part = Part.from_data(mime_type="audio/mpeg", data=audio_bytes)
+
+    max_retries = 3
+    last_err = None
+    
+    for attempt in range(1, max_retries + 1):
+        for model_name in model_names:
             try:
-                audio_path.unlink()
-            except OSError:
-                pass
+                model = GenerativeModel(model_name)
+                rsp = model.generate_content([prompt, audio_part])
+                
+                txt = (rsp.text or "").strip()
+                txt = re.sub(r"^```json\s*|\s*```$", "", txt, flags=re.MULTILINE)
+                data = json.loads(txt)
+                return {
+                    "transcript": data.get("transcript", "") or "",
+                    "transcript_translated": data.get("transcript_translated", "") or "",
+                    "video_language": data.get("video_language", "") or "",
+                }
+            except Exception as e:
+                last_err = e
+                if "429" in str(e): break 
+                continue 
+
+        err_str = str(last_err)
+        if "429" in err_str:
+            if attempt < max_retries:
+                time.sleep(10 * attempt)
+                continue
+            else:
+                raise RuntimeError(f"Hủy bỏ: Chặn 429 sau {max_retries} lần thử Audio.")
+        else:
+            raise RuntimeError(f"Lỗi Vertex AI Audio: {last_err}")
 
 
 def extract_countries_from_ad(ad_dict: Dict[str, Any], fallback_country: str) -> list[str]:
@@ -768,6 +903,66 @@ def save_seen_video_keys(output_dir: Path, seen: set[str]) -> None:
     p.write_text(json.dumps(sorted(seen), ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+# def _analyze_video_download_and_gemini(
+#     video_url: str,
+#     safe_id: str,
+#     gemini_models: List[str],
+#     no_transcript: bool,
+# ) -> Dict[str, Any]:
+#     video_path = VIDEO_DIR / f"{safe_id}.mp4"
+    
+#     # Khởi tạo kết quả mặc định
+#     result = {
+#         "duration": 0,
+#         "transcript": "",
+#         "transcript_translated": "",
+#         "video_language": "",
+#     }
+
+#     try:
+#         # 1. Download
+#         retry_step("download_video", lambda: download_video(video_url, video_path), retries=2)
+        
+#         # 2. Probe duration
+#         duration = probe_duration_seconds(video_path)
+#         if duration:
+#             result["duration"] = int(duration)
+#         else:
+#             result["duration"] = 0
+
+#         # 3. Kiểm tra điều kiện dừng sớm
+#         if no_transcript:
+#             return result
+            
+#         if result["duration"] >= 600: 
+#             result["transcript"] = "Thời lượng video vượt quá 10 phút, không phân tích được nội dung."
+#             return result
+
+#         # 4. Gemini xử lý
+#         gem = retry_step(
+#             "gemini_transcribe_and_analyze",
+#             lambda: gemini_transcribe_and_analyze(gemini_models, video_path),
+#             retries=1,
+#         )
+        
+#         # Cập nhật kết quả từ Gemini
+#         result.update({
+#             "transcript": gem.get("transcript", ""),
+#             "transcript_translated": gem.get("transcript_translated", ""),
+#             "video_language": gem.get("video_language", ""),
+#         })
+#         return result
+
+#     except Exception as e:
+#         print(f"Error processing video {safe_id}: {e}")
+#         return result 
+#     finally:
+#         if video_path.exists():
+#             try:
+#                 video_path.unlink()
+#             except OSError:
+#                 pass
+
 def _analyze_video_download_and_gemini(
     video_url: str,
     safe_id: str,
@@ -775,8 +970,9 @@ def _analyze_video_download_and_gemini(
     no_transcript: bool,
 ) -> Dict[str, Any]:
     video_path = VIDEO_DIR / f"{safe_id}.mp4"
+    clip_path = None
+    audio_path = None
     
-    # Khởi tạo kết quả mặc định
     result = {
         "duration": 0,
         "transcript": "",
@@ -785,49 +981,81 @@ def _analyze_video_download_and_gemini(
     }
 
     try:
-        # 1. Download
+        # 1. Download Video
         retry_step("download_video", lambda: download_video(video_url, video_path), retries=2)
         
-        # 2. Probe duration
-        duration = probe_duration_seconds(video_path)
-        if duration:
-            result["duration"] = int(duration)
-        else:
-            result["duration"] = 0
+        # 2. Lấy thời lượng
+        duration_str = probe_duration_seconds(video_path)
+        duration = int(duration_str) if duration_str else 0
+        result["duration"] = duration
 
-        # 3. Kiểm tra điều kiện dừng sớm
+        # 3. Guardrails (Bỏ qua nếu tắt transcript hoặc video dài > 10p)
         if no_transcript:
             return result
             
-        if result["duration"] >= 600: 
+        if duration >= 600: 
             result["transcript"] = "Thời lượng video vượt quá 10 phút, không phân tích được nội dung."
             return result
 
-        # 4. Gemini xử lý
-        gem = retry_step(
+        # =========================================================================
+        # BƯỚC 1: XỬ LÝ VISUAL (Hình ảnh chữ)
+        # =========================================================================
+        # Logic: >10s thì lấy 10, <10s thì lấy 50% (làm tròn số nguyên)
+        # cut_duration = 10 if duration > 10 else max(1, round(duration / 2.0))
+        
+        # clip_path = extract_visual_clip_from_video(video_path, cut_duration)
+        visual_lang = None
+        # visual_lang = retry_step(
+        #     "gemini_detect_visual_language",
+        #     lambda: gemini_detect_visual_language(gemini_models, clip_path),
+        #     retries=1,
+        # )
+
+        # Nghỉ 10s để xả Rate Limit 429 theo yêu cầu
+        # time.sleep(10)
+
+        # =========================================================================
+        # BƯỚC 2: XỬ LÝ AUDIO (Âm thanh/Thoại)
+        # =========================================================================
+        audio_path = extract_audio_from_video(video_path)
+        audio_analysis = retry_step(
             "gemini_transcribe_and_analyze",
-            lambda: gemini_transcribe_and_analyze(gemini_models, video_path),
+            lambda: gemini_transcribe_and_analyze(gemini_models, audio_path),
             retries=1,
         )
         
-        # Cập nhật kết quả từ Gemini
+        # =========================================================================
+        # TỔNG HỢP KẾT QUẢ
+        # =========================================================================
+        # Ưu tiên Visual Language, nếu Visual trả về UNKNOWN thì rớt xuống dùng Audio Language
+        final_language = "UNKNOWN"
+        
+        if visual_lang and visual_lang.strip().upper() != "UNKNOWN":
+            final_language = f"{visual_lang.strip()}"
+        else:
+            audio_lang = audio_analysis.get("video_language", "UNKNOWN")
+            if audio_lang and audio_lang.strip().upper() != "UNKNOWN":
+                final_language = f"{audio_lang.strip()} (Text)"
+        if final_language == "UNKNOWN":
+            final_language = ""
         result.update({
-            "transcript": gem.get("transcript", ""),
-            "transcript_translated": gem.get("transcript_translated", ""),
-            "video_language": gem.get("video_language", ""),
+            "transcript": audio_analysis.get("transcript", ""),
+            "transcript_translated": audio_analysis.get("transcript_translated", ""),
+            "video_language": final_language,
         })
         return result
 
     except Exception as e:
-        print(f"Error processing video {safe_id}: {e}")
+        print(f"Error processing video {safe_id}: {e}", file=sys.stderr)
         return result 
     finally:
-        if video_path.exists():
-            try:
-                video_path.unlink()
-            except OSError:
-                pass
-
+        # Dọn dẹp sạch sẽ CẢ 3 file sinh ra trong luồng để tránh rác ổ cứng
+        for p in (video_path, clip_path, audio_path):
+            if p and p.exists():
+                try:
+                    p.unlink()
+                except OSError:
+                    pass
 
 def _get_or_analyze_video(
     video_key: str,
