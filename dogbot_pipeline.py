@@ -663,64 +663,186 @@ def extract_audio_from_video(video_path: Path) -> Path:
 #             except OSError:
 #                 pass
 
+# def gemini_transcribe_and_analyze(model_names: List[str], audio_path: Path) -> Dict[str, Any]:
+#     """Phân tích Audio theo 3 trường hợp."""
+#     prompt = """
+# You are an expert audio analyst. Listen to this audio file and classify it into 1 of 3 cases, then return EXACTLY ONE JSON OBJECT with 3 keys: 'transcript', 'transcript_translated', 'video_language'. 
+# Do not use markdown fences (e.g., ```json). STRICTLY FOLLOW THESE RULES:
+
+# CASE 1 - Background music only (no lyrics, no human speech):
+# - transcript: "Lyrics: None"
+# - transcript_translated: "Lyrics: Không có"
+# - video_language: "UNKNOWN"
+
+# CASE 2 - Music with lyrics (song):
+# - transcript: "Lyrics: [Full original lyrics in original language]"
+# - transcript_translated: "Lyrics: [Lyrics translated to VIETNAMESE]"
+# - video_language: "[Language Name]"
+
+# CASE 3 - Regular speech (people talking, voiceover):
+# - transcript: "[Full original speech]"
+# - transcript_translated: "[Full speech translated to VIETNAMESE]"
+# - video_language: "[Language Name]"
+# """
+
+#     with open(audio_path, "rb") as f:
+#         audio_bytes = f.read()
+        
+#     audio_part = Part.from_data(mime_type="audio/mpeg", data=audio_bytes)
+
+#     max_retries = 3
+#     last_err = None
+    
+#     for attempt in range(1, max_retries + 1):
+#         for model_name in model_names:
+#             try:
+#                 model = GenerativeModel(model_name)
+#                 rsp = model.generate_content([prompt, audio_part])
+                
+#                 txt = (rsp.text or "").strip()
+#                 txt = re.sub(r"^```json\s*|\s*```$", "", txt, flags=re.MULTILINE)
+#                 data = json.loads(txt)
+#                 return {
+#                     "transcript": data.get("transcript", "") or "",
+#                     "transcript_translated": data.get("transcript_translated", "") or "",
+#                     "video_language": data.get("video_language", "") or "",
+#                 }
+#             except Exception as e:
+#                 last_err = e
+#                 if "429" in str(e): break 
+#                 continue 
+
+#         err_str = str(last_err)
+#         if "429" in err_str:
+#             if attempt < max_retries:
+#                 time.sleep(10 * attempt)
+#                 continue
+#             else:
+#                 raise RuntimeError(f"Hủy bỏ: Chặn 429 sau {max_retries} lần thử Audio.")
+#         else:
+#             raise RuntimeError(f"Lỗi Vertex AI Audio: {last_err}")
+
 def gemini_transcribe_and_analyze(model_names: List[str], audio_path: Path) -> Dict[str, Any]:
-    """Phân tích Audio theo 3 trường hợp."""
-    prompt = """
-You are an expert audio analyst. Listen to this audio file and classify it into 1 of 3 cases, then return EXACTLY ONE JSON OBJECT with 3 keys: 'transcript', 'transcript_translated', 'video_language'. 
+    """Phân tích Audio qua 2 bước API: Lấy Transcript (Audio) -> Dịch & Nhận diện ngôn ngữ (Text)."""
+    
+    with open(audio_path, "rb") as f:
+        audio_bytes = f.read()
+    audio_part = Part.from_data(mime_type="audio/mpeg", data=audio_bytes)
+
+    # =========================================================================
+    # API 1: LẤY TRANSCRIPT TỪ AUDIO (Retry: 3 lần)
+    # =========================================================================
+    prompt_1 = """
+You are an expert audio analyst. Listen to this audio file and classify it into 1 of 3 cases, then return EXACTLY ONE JSON OBJECT with 1 key: 'transcript'. 
 Do not use markdown fences (e.g., ```json). STRICTLY FOLLOW THESE RULES:
 
 CASE 1 - Background music only (no lyrics, no human speech):
 - transcript: "Lyrics: None"
-- transcript_translated: "Lyrics: Không có"
-- video_language: "UNKNOWN"
 
 CASE 2 - Music with lyrics (song):
 - transcript: "Lyrics: [Full original lyrics in original language]"
-- transcript_translated: "Lyrics: [Lyrics translated to VIETNAMESE]"
-- video_language: "[Language Name]"
 
 CASE 3 - Regular speech (people talking, voiceover):
 - transcript: "[Full original speech]"
-- transcript_translated: "[Full speech translated to VIETNAMESE]"
-- video_language: "[Language Name]"
 """
-
-    with open(audio_path, "rb") as f:
-        audio_bytes = f.read()
-        
-    audio_part = Part.from_data(mime_type="audio/mpeg", data=audio_bytes)
-
-    max_retries = 3
-    last_err = None
     
-    for attempt in range(1, max_retries + 1):
+    transcript_result = ""
+    max_retries_api1 = 3
+    last_err_api1 = None
+    
+    for attempt in range(1, max_retries_api1 + 1):
         for model_name in model_names:
             try:
                 model = GenerativeModel(model_name)
-                rsp = model.generate_content([prompt, audio_part])
+                rsp = model.generate_content([prompt_1, audio_part])
                 
                 txt = (rsp.text or "").strip()
                 txt = re.sub(r"^```json\s*|\s*```$", "", txt, flags=re.MULTILINE)
                 data = json.loads(txt)
-                return {
-                    "transcript": data.get("transcript", "") or "",
-                    "transcript_translated": data.get("transcript_translated", "") or "",
-                    "video_language": data.get("video_language", "") or "",
-                }
+                transcript_result = data.get("transcript", "") or ""
+                break # Thoát vòng lặp model nếu thành công
             except Exception as e:
-                last_err = e
+                last_err_api1 = e
                 if "429" in str(e): break 
                 continue 
-
-        err_str = str(last_err)
+        
+        if transcript_result:
+            break
+            
+        err_str = str(last_err_api1)
         if "429" in err_str:
-            if attempt < max_retries:
+            if attempt < max_retries_api1:
                 time.sleep(10 * attempt)
                 continue
             else:
-                raise RuntimeError(f"Hủy bỏ: Chặn 429 sau {max_retries} lần thử Audio.")
+                raise RuntimeError(f"API 1 Hủy bỏ: Chặn 429 sau {max_retries_api1} lần thử Audio.")
         else:
-            raise RuntimeError(f"Lỗi Vertex AI Audio: {last_err}")
+            raise RuntimeError(f"Lỗi Vertex AI Audio (API 1): {last_err_api1}")
+
+    # =========================================================================
+    # API 2: DỊCH VÀ NHẬN DIỆN NGÔN NGỮ TỪ TEXT (Retry: 5 lần, Partial Failure)
+    # =========================================================================
+    final_result = {
+        "transcript": transcript_result,
+        "transcript_translated": "",
+        "video_language": "",
+    }
+    
+    # Nếu API 1 trả về rỗng, không cần gọi API 2
+    if not transcript_result:
+        return final_result
+
+    prompt_2 = f"""
+Analyze the following text and return EXACTLY ONE JSON OBJECT with 2 keys: 'transcript_translated', 'video_language'. 
+Do not use markdown fences (e.g., ```json). STRICTLY FOLLOW THESE RULES:
+
+Text to analyze: "{transcript_result}"
+
+- transcript_translated: Translate the text to VIETNAMESE. If the text is something like "Lyrics: None", return "Lyrics: Không có".
+- video_language: Identify the original language of the text. If the text is something like "Lyrics: None", return exactly "UNKNOWN".
+"""
+
+    max_retries_api2 = 5
+    last_err_api2 = None
+    api2_success = False
+    
+    for attempt in range(1, max_retries_api2 + 1):
+        for model_name in model_names:
+            try:
+                model = GenerativeModel(model_name)
+                # Chỉ truyền text, không truyền audio_part
+                rsp = model.generate_content([prompt_2])
+                
+                txt = (rsp.text or "").strip()
+                txt = re.sub(r"^```json\s*|\s*```$", "", txt, flags=re.MULTILINE)
+                data = json.loads(txt)
+                
+                final_result["transcript_translated"] = data.get("transcript_translated", "") or ""
+                final_result["video_language"] = data.get("video_language", "") or ""
+                api2_success = True
+                break # Thoát vòng lặp model
+            except Exception as e:
+                last_err_api2 = e
+                if "429" in str(e): break 
+                continue 
+                
+        if api2_success:
+            break
+            
+        err_str = str(last_err_api2)
+        if "429" in err_str:
+            if attempt < max_retries_api2:
+                # Text nhẹ nên sleep ngắn hơn một chút vẫn an toàn
+                time.sleep(10 * attempt)
+                continue
+            else:
+                print(f"[WARN] API 2 thất bại sau {max_retries_api2} lần thử (Rate Limit 429). Lưu partial data.", file=sys.stderr)
+                break # Thoát ra để return Partial Data
+        else:
+            print(f"[WARN] Lỗi Vertex AI Text (API 2): {last_err_api2}. Lưu partial data.", file=sys.stderr)
+            break # Thoát ra để return Partial Data
+
+    return final_result
 
 
 def extract_countries_from_ad(ad_dict: Dict[str, Any], fallback_country: str) -> list[str]:
