@@ -115,17 +115,29 @@ def ingest_excel_to_postgres(excel_path: str, db_config: dict):
             if nums: 
                 reach_val = int(nums[0])
         
+        d_start_raw = row.get('start_date', '')
+        delivery_start = str(d_start_raw) if d_start_raw != '' else None
+        
+        d_stop_raw = row.get('end_date', '')
+        delivery_stop = str(d_stop_raw) if d_stop_raw != '' else None
+        
+        run_dur_raw = row.get('ad_run_duration', '')
+        run_duration = int(float(run_dur_raw)) if run_dur_raw != '' else None
+
         cur.execute("""
             INSERT INTO adsets (
                 ad_group_id, video_id, text_id, ad_id_full, library_id_full,
-                crawl_date, countries, reach, cta_text, cta_type, app_link,
+                crawl_date, start_date, end_date, ad_run_duration, countries, reach, cta_text, cta_type, app_link,
                 source_input_kind, source_input_value, data_source
             ) VALUES (
-                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
             ) ON CONFLICT (data_source, ad_id_full, crawl_date) DO UPDATE SET
                 ad_group_id = EXCLUDED.ad_group_id,
                 video_id = EXCLUDED.video_id,
                 text_id = EXCLUDED.text_id,
+                start_date = EXCLUDED.start_date,
+                end_date = EXCLUDED.end_date,
+                ad_run_duration = EXCLUDED.ad_run_duration,
                 countries = EXCLUDED.countries,
                 reach = EXCLUDED.reach,
                 cta_text = EXCLUDED.cta_text,
@@ -133,7 +145,7 @@ def ingest_excel_to_postgres(excel_path: str, db_config: dict):
                 app_link = EXCLUDED.app_link;
         """, (
             ad_group_id, video_id, text_id, row['ad_id_full'], row.get('library_id_full'),
-            crawl_date, json.dumps(countries_list), reach_val, row.get('cta_text'), row.get('cta_type'), 
+            crawl_date, delivery_start, delivery_stop, run_duration, json.dumps(countries_list), reach_val, row.get('cta_text'), row.get('cta_type'), 
             row.get('app_link'), row.get('source_input_kind'), row.get('source_input_value'),
             data_source
         ))

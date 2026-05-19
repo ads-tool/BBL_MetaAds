@@ -157,6 +157,9 @@ OUTPUT_COLUMNS = [
     "ad_id_full",
     "library_id_full",
     "crawl_date",
+    "start_date",  
+    "end_date",  
+    "ad_run_duration",
     "countries",
     "headline",
     "headline_language",
@@ -1224,6 +1227,34 @@ def _get_or_analyze_video(
         except TimeoutError:
             raise RuntimeError(f"Chờ phân tích video {video_key} quá lâu (timeout).")
 
+def process_ad_dates(start_raw: str, stop_raw: str) -> tuple[str, str, str]:
+    """Cắt lấy YYYY-MM-DD, làm rỗng end_date nếu là hôm nay, và tính duration."""
+    start_str = str(start_raw)[:10] if start_raw else ""
+    stop_str = str(stop_raw)[:10] if stop_raw else ""
+    
+    if not start_str:
+        return "", "", ""
+        
+    try:
+        today = dt.date.today()
+        start_date_obj = dt.datetime.strptime(start_str, "%Y-%m-%d").date()
+        
+        end_date_obj = today
+        if stop_str:
+            stop_date_obj = dt.datetime.strptime(stop_str, "%Y-%m-%d").date()
+            # Nếu stop_date lớn hơn hoặc bằng hôm nay -> coi như đang chạy
+            if stop_date_obj >= today:
+                stop_str = ""
+                end_date_obj = today
+            else:
+                end_date_obj = stop_date_obj
+                
+        # Tính số ngày chạy (đảm bảo >= 0)
+        run_duration = max(0, (end_date_obj - start_date_obj).days)
+        return start_str, stop_str, str(run_duration)
+    except Exception:
+        # Fallback nếu lỗi parse format
+        return start_str, stop_str, ""
 
 def build_row(parent_countries: list[str], ad_dict: Dict[str, Any], creative: Dict[str, Any], gemini_models: List[str], video_cache: Dict[str, "Future[Dict[str, Any]]"], video_cache_lock: threading.Lock, no_transcript: bool = False) -> Dict[str, Any]:
     # Lấy ID phân tách rõ ràng cho Database
@@ -1272,11 +1303,19 @@ def build_row(parent_countries: list[str], ad_dict: Dict[str, Any], creative: Di
         merged_countries = parent_countries
 
     active_models = None if no_transcript else gemini_models
+    
+    start_date_val, end_date_val, run_duration_val = process_ad_dates(
+        creative.get("delivery_start_time") or "",
+        creative.get("delivery_stop_time") or ""
+    )
 
     row = {
         "ad_id_full": child_id,        # Đảm bảo Unique Key cho db_ingest
         "library_id_full": parent_id,  # Lưu vết ID Cụm/Chiến dịch gốc
         "crawl_date": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "start_date": start_date_val,
+        "end_date": end_date_val,
+        "ad_run_duration": run_duration_val,
         "countries": format_countries_display(merged_countries),
         "headline": headline,
         "headline_language": detect_text_language(headline, active_models),
@@ -1490,11 +1529,19 @@ def _build_fallback_row(
     merged_countries = c_countries if (isinstance(c_countries, list) and c_countries) else countries_list
 
     active_models = None if no_transcript else gemini_models
+    
+    start_date_val, end_date_val, run_duration_val = process_ad_dates(
+        creative.get("delivery_start_time") or "",
+        creative.get("delivery_stop_time") or ""
+    )
 
     return {
         "ad_id_full": child_key,
         "library_id_full": parent_key,
         "crawl_date": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "start_date": start_date_val,
+        "end_date": end_date_val,
+        "ad_run_duration": run_duration_val,
         "countries": format_countries_display(merged_countries),
         "headline": headline,
         "headline_language": detect_text_language(headline, active_models),
