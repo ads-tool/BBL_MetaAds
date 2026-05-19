@@ -1271,15 +1271,17 @@ def build_row(parent_countries: list[str], ad_dict: Dict[str, Any], creative: Di
     else:
         merged_countries = parent_countries
 
+    active_models = None if no_transcript else gemini_models
+
     row = {
         "ad_id_full": child_id,        # Đảm bảo Unique Key cho db_ingest
         "library_id_full": parent_id,  # Lưu vết ID Cụm/Chiến dịch gốc
         "crawl_date": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "countries": format_countries_display(merged_countries),
         "headline": headline,
-        "headline_language": detect_text_language(headline, gemini_models),
+        "headline_language": detect_text_language(headline, active_models),
         "primary_text": primary_text,
-        "primary_text_language": detect_text_language(primary_text, gemini_models),
+        "primary_text_language": detect_text_language(primary_text, active_models),
         "video_url": video_url or "",
         "duration": "",
         "transcript": "",
@@ -1444,6 +1446,7 @@ def _build_fallback_row(
     parent_key: str,
     child_key: str,
     gemini_models: List[str],
+    no_transcript: bool = False,
 ) -> Dict[str, Any]:
     """Fallback row khi build_row thất bại (lỗi mạng/video/Gemini).
 
@@ -1483,15 +1486,17 @@ def _build_fallback_row(
     c_countries = creative.get("countries")
     merged_countries = c_countries if (isinstance(c_countries, list) and c_countries) else countries_list
 
+    active_models = None if no_transcript else gemini_models
+
     return {
         "ad_id_full": child_key,
         "library_id_full": parent_key,
         "crawl_date": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "countries": format_countries_display(merged_countries),
         "headline": headline,
-        "headline_language": detect_text_language(headline, gemini_models),
+        "headline_language": detect_text_language(headline, active_models),
         "primary_text": primary_text,
-        "primary_text_language": detect_text_language(primary_text, gemini_models),
+        "primary_text_language": detect_text_language(primary_text, active_models),
         "video_url": video_url or "",
         "duration": "",
         "transcript": "",
@@ -1683,7 +1688,7 @@ def run(page_link: Optional[str], page_id: Optional[str], output_dir: Path, max_
                 file=sys.stderr,
                 flush=True,
             )
-            fallback = _build_fallback_row(countries_list, ad_dict, creative, parent_key, child_key, gemini_models)
+            fallback = _build_fallback_row(countries_list, ad_dict, creative, parent_key, child_key, gemini_models, no_transcript)
             return ("failed", child_key, fallback)
 
     completed_count = 0
