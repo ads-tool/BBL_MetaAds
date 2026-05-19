@@ -1298,6 +1298,9 @@ def build_row(parent_countries: list[str], ad_dict: Dict[str, Any], creative: Di
 
     if not video_url or video_url == "":
         return row
+    
+    if no_transcript:
+        return row
 
     video_key = canonical_video_key(video_url)
     safe_id = re.sub(r"[^a-zA-Z0-9_-]", "_", child_id)[:80]
