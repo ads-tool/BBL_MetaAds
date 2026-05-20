@@ -957,15 +957,15 @@ def crawl_ads_from_page(page_link: Optional[str], page_id: Optional[str], output
         def _crawl_all():
             tmp_json = output_dir / f"_tmp_collect_{page_id}_{country}.json"
             
-            filters = None
-            if start_date or end_date:
-                filter_kwargs = {}
-                if start_date:
-                    filter_kwargs["start_date"] = dt.datetime.strptime(start_date, "%Y-%m-%d")
-                if end_date:
-                    filter_kwargs["end_date"] = dt.datetime.strptime(end_date, "%Y-%m-%d")
+            # filters = None
+            # if start_date or end_date:
+            #     filter_kwargs = {}
+            #     if start_date:
+            #         filter_kwargs["start_date"] = dt.datetime.strptime(start_date, "%Y-%m-%d")
+            #     if end_date:
+            #         filter_kwargs["end_date"] = dt.datetime.strptime(end_date, "%Y-%m-%d")
                 
-                filters = FilterConfig(**filter_kwargs)
+            #     filters = FilterConfig(**filter_kwargs)
 
             try:
                 collector.collect_to_json(
@@ -974,7 +974,7 @@ def crawl_ads_from_page(page_link: Optional[str], page_id: Optional[str], output
                     country=country,  
                     page_ids=[str(page_id)],
                     status=status,    
-                    filter_config=filters, # <--- Truyền object filters vào đây thay vì chuỗi
+                    # filter_config=filters, # <--- Truyền object filters vào đây thay vì chuỗi
                     max_results=None,
                 )
                 with tmp_json.open("r", encoding="utf-8") as f:
@@ -1590,6 +1590,9 @@ def run(page_link: Optional[str], page_id: Optional[str], output_dir: Path, max_
     # tải + phân tích AI 1 lần; thread sau sẽ chờ trên Future của thread đầu tiên.
     video_cache: Dict[str, "Future[Dict[str, Any]]"] = {}
     video_cache_lock = threading.Lock()
+    
+    target_start = dt.datetime.strptime(start_date, "%Y-%m-%d").date() if start_date else None
+    target_end = dt.datetime.strptime(end_date, "%Y-%m-%d").date() if end_date else None
 
     # -------------------------------------------------------------------------
     # BƯỚC 1: TIỀN XỬ LÝ - QUY ĐỔI NULL = 0 VÀ LỌC MIN_IMPRESSIONS
@@ -1610,34 +1613,47 @@ def run(page_link: Optional[str], page_id: Optional[str], output_dir: Path, max_
         for c_idx, c in enumerate(creatives, start=1):
             if not isinstance(c, dict): c = {}
             
-            # CẤP ID ĐỘC LẬP: Tránh việc các thẻ con ghi đè checkpoint
             if not c.get("child_ad_id"):
                 c["child_ad_id"] = f"{parent_key}_{c_idx}"
 
             child_key = str(c.get("child_ad_id"))
-            
             if child_key in completed_ad_keys:
                 continue
 
-            # Lấy giá trị reach
+            # ─── 1. LỌC THEO MIN IMPRESSIONS ───
             eu_reach_lb = parse_eu_total_reach_lower_bound(c)
             if eu_reach_lb is None and "eu_total_reach" not in c:
                 eu_reach_lb = parse_eu_total_reach_lower_bound(ad_dict)
 
-            # LOGIC CHUẨN: Coi null (None) là 0
             reach_val = eu_reach_lb if eu_reach_lb is not None else 0
-
-            # Lọc dứt khoát
             if reach_val < min_impressions:
                 skipped_low_reach += 1
                 completed_ad_keys.add(child_key)
-                # Dòng print dưới đây được comment lại để tránh rác console, bạn có thể mở ra nếu muốn debug
-                # print(f"[INFO] Bỏ qua {child_key} do reach = {reach_val} < {min_impressions}", file=sys.stderr)
                 continue
+
+            # ─── 2. LỌC THEO NGÀY CỦA THẺ CON (TỰ BUILT) ───
+            if target_start or target_end:
+                # Tận dụng hàm process_ad_dates để lấy đúng ngày chuẩn
+                start_str, end_str, _ = process_ad_dates(
+                    c.get("delivery_start_time") or "",
+                    c.get("delivery_stop_time") or ""
+                )
+                
+                ad_start = dt.datetime.strptime(start_str, "%Y-%m-%d").date() if start_str else None
+                ad_end = dt.datetime.strptime(end_str, "%Y-%m-%d").date() if end_str else None
+                
+                # Loại bỏ nếu thẻ con kết thúc TRƯỚC mốc start_date tìm kiếm
+                if target_start and ad_end and ad_end < target_start:
+                    completed_ad_keys.add(child_key)
+                    continue
+                    
+                # Loại bỏ nếu thẻ con bắt đầu SAU mốc end_date tìm kiếm
+                if target_end and ad_start and ad_start > target_end:
+                    completed_ad_keys.add(child_key)
+                    continue
 
             valid_creatives.append(c)
 
-        # CHỈ giữ lại thẻ Cha nào còn ít nhất 1 thẻ Con sống sót qua bộ lọc
         if valid_creatives:
             ad_dict["creatives"] = valid_creatives
             filtered_ads.append((countries_list, ad_dict))
