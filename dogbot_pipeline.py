@@ -802,7 +802,7 @@ Do not use markdown fences (e.g., ```json). STRICTLY FOLLOW THESE RULES:
 Text to analyze: "{transcript_result}"
 
 - transcript_translated: Translate the text to VIETNAMESE. If the text is something like "Lyrics: None", return "Lyrics: Không có".
-- video_language: Identify the original language of the text. If the text is something like "Lyrics: None", return exactly "UNKNOWN".
+- video_language: Identify the original language of the text using its full English name (e.g., 'English', 'Korean', 'Thai', 'Vietnamese'). If the text is like 'Lyrics: None', return 'UNKNOWN'.
 """
 
     max_retries_api2 = 5
@@ -1160,7 +1160,7 @@ def _analyze_video_download_and_gemini(
         else:
             audio_lang = audio_analysis.get("video_language", "UNKNOWN")
             if audio_lang and audio_lang.strip().upper() != "UNKNOWN":
-                final_language = f"{audio_lang.strip()} (Text)"
+                final_language = f"{audio_lang.strip()}"
         if final_language == "UNKNOWN":
             final_language = ""
         result.update({
