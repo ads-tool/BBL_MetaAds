@@ -5,3 +5,6 @@ file_send_meta
 __pycache__
 *.log
 *.json
+fix_video_language_column.py
+backup.py
+*.csv

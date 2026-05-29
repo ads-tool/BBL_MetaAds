@@ -802,7 +802,7 @@ Do not use markdown fences (e.g., ```json). STRICTLY FOLLOW THESE RULES:
 Text to analyze: "{transcript_result}"
 
 - transcript_translated: Translate the text to VIETNAMESE. If the text is something like "Lyrics: None", return "Lyrics: Không có".
-- video_language: Identify the original language of the text using its full English name (e.g., 'English', 'Korean', 'Thai', 'Vietnamese'). If the text is like 'Lyrics: None', return 'UNKNOWN'.
+- video_language: Identify the original language of the text. Return ONLY the full English name with the format: First letter uppercase, the rest lowercase (e.g., 'English', 'Spanish', 'Vietnamese', 'Hindi'). If the text is "Lyrics: None", return 'UNKNOWN'.
 """
 
     max_retries_api2 = 5
