@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.responses import FileResponse
 import time
+import requests
 
 load_dotenv() 
 
@@ -99,6 +100,17 @@ def run_pipeline_worker(task_id: str, raw_input: str, iso_country: str, meta_sta
                                 new_staged_path = staged_path
                             tasks_db[task_id]["message"] = f"Pipeline chạy và Insert DB thành công (Quốc gia: {iso_country})."
                             tasks_db[task_id]["download_path"] = new_staged_path
+                            
+                            try:
+                                requests.post(
+                                    "http://192.168.1.148:1111/auto_sync",
+                                    json={"scope": "external"},
+                                    timeout=2
+                                )
+                                print(f"[AUTO_SYNC] Đã trigger đồng bộ cho task {task_id}")
+                            except Exception as sync_err:
+                                print(f"[AUTO_SYNC WARN] ĐÃ gọi đồng bộ, bỏ qua timeout hoặc lỗi: {sync_err}")
+                                
                         break
             except Exception as db_err:
                 tasks_db[task_id]["status"] = "PARTIAL"
