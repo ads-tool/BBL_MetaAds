@@ -103,7 +103,7 @@ def run_pipeline_worker(task_id: str, raw_input: str, iso_country: str, meta_sta
                             
                             try:
                                 requests.post(
-                                    "http://192.168.1.148:1111/auto_sync",
+                                    os.getenv("SYNC_URL","http://192.168.1.148:1111/auto_sync"),
                                     json={"scope": "external"},
                                     timeout=2
                                 )
