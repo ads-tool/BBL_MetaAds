@@ -33,6 +33,7 @@ REQUIRED_PACKAGES = [
     ("langdetect", "langdetect"),
     ("pycountry", "pycountry"),
     ("google.generativeai", "google-generativeai"),
+    ("vertexai", "google-cloud-aiplatform"),
     ("python-dotenv", "python-dotenv"),
 ]
 
@@ -150,7 +151,7 @@ def _result_artifacts_exist(output_dir: Path, run: dict) -> bool:
 def run_dogbot(run_dir: Path, dogbot_script: Path, item: InputItem, max_ads: int | None = None, country: str = "ALL", status: str = "ACTIVE", min_impressions: int = 100, no_transcript: bool = False, start_date: str = None, end_date: str = None, concurrency: int = NUM_CONCURRENCY) -> dict:
     output_dir = run_dir / "outputs"
     cmd = [
-        "python3", str(dogbot_script),
+        sys.executable, str(dogbot_script),
         "--output-dir", str(output_dir),
         "--country", country,
         "--status", status,
